@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "style-memory": {
+      "command": "node",
+      "args": ["/absolute/path/to/style-memory-mcp/dist/server.js"],
+      "env": {
+        "STYLE_MEMORY_PATH": "/absolute/path/to/style-memory.json"
+      }
+    }
+  }
+}

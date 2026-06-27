@@ -1,0 +1,49 @@
+{
+  "name": "style-memory-mcp",
+  "version": "0.2.0",
+  "description": "A tiny local MCP server that learns conversational style without storing private memories.",
+  "type": "module",
+  "bin": {
+    "style-memory-mcp": "dist/server.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "README.zh-CN.md",
+    "examples",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/server.ts",
+    "start": "node dist/server.js",
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test src/**/*.test.ts"
+  },
+  "keywords": [
+    "mcp",
+    "agent-memory",
+    "style-memory",
+    "idiolect",
+    "catchphrases",
+    "local-first"
+  ],
+  "author": "hexingyuofficial <hexingyuofficial@foxmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hexingyuofficial/style-memory-mcp"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.4",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
