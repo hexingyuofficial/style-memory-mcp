@@ -33,6 +33,7 @@
 - 升级时还要求该习惯出现在**≥2 个不同的 context 标签**下（借鉴 nuwa-skill 的跨域验证）
 - 自动清理过期习惯（候选 → 归档 → 删除）
 - 支持中文、英文、emoji、颜文字、方言标记 — 以及给 host LLM 兜底用的 free-form `idiolect` 类型
+- 返回面向 agent 的可执行风格简报：先讲如何使用，再给当前场景相关习惯
 - 兼容任何支持 MCP 工具的 agent
 - 可固定习惯以防止自动清理
 - 随时可通过 `set_learning_enabled` 暂停学习
@@ -128,6 +129,10 @@ Agent 应在对话开始前或写友好回复前调用此工具。
 
 列出所有候选、活跃和已归档的习惯。
 
+### `review_style_habits`
+
+返回一份简短的审查队列，给每条习惯建议 `keep`、`pin`、`forget` 或 `observe`。适合用户定期看看 MCP 到底学了什么。
+
 ### `forget_style_habit`
 
 通过 id 或确切文本删除一个习惯。
@@ -161,6 +166,19 @@ Agent 应在对话开始前或写友好回复前调用此工具。
 ```
 
 完整范本见 `examples/agent-instruction.md`。
+
+## 只读复用与重启
+
+MCP 进程通常由宿主 agent 启动和重启，`style-memory-mcp` 自身不需要也不应该强行自重启。真正持久的是 JSON store：只要多个会话使用同一个 `STYLE_MEMORY_PATH`，重启后仍会读到同一份风格记忆。
+
+如果你已经学够了，想让它只负责"接住风格"而不是继续学习，可以：
+
+1. 保持同一个 `STYLE_MEMORY_PATH`。
+2. 在新会话开头调用 `get_style_brief`。
+3. 通过 `set_learning_enabled(false)` 或 `STYLE_MEMORY_LEARNING=off` 暂停继续学习。
+4. 需要重新学习时再打开 learning。
+
+这样体验上就是：同一个 agent 或新会话都能读到风格，但不会每次都继续写入新习惯。
 
 ## LLM 协同学习
 

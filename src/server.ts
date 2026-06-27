@@ -10,6 +10,7 @@ import {
   listStyleHabits,
   observeUserMessage,
   pinStyleHabit,
+  reviewStyleHabits,
 } from "./memory.js";
 import { loadStore, saveStore } from "./store.js";
 
@@ -156,6 +157,25 @@ server.registerTool(
     inputSchema: {},
   },
   async () => safeHandler(async () => ({ habits: await listStyleHabits() })),
+);
+
+server.registerTool(
+  "review_style_habits",
+  {
+    title: "Review style habits",
+    description:
+      "Return a concise review queue with suggested actions such as keep, pin, forget, or observe.",
+    inputSchema: {
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .default(12)
+        .describe("Maximum number of habits to include in the review queue."),
+    },
+  },
+  async ({ limit }) => safeHandler(() => reviewStyleHabits(limit)),
 );
 
 server.registerTool(

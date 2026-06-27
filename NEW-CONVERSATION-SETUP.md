@@ -11,11 +11,19 @@ If a new chat window uses the same MCP config, it can read the same style memory
 3. On a new conversation, call `get_style_brief` first.
 4. After each user message, call `observe_user_message` with only the latest user message.
 
+If the style is already good enough, you can run in read-only mode:
+
+1. Keep the same `STYLE_MEMORY_PATH`.
+2. Call `get_style_brief` at startup.
+3. Disable learning with `set_learning_enabled(false)` or `STYLE_MEMORY_LEARNING=off`.
+4. Re-enable learning only when you want to refresh the style profile.
+
 ## What this means
 
 - New conversations in the same agent setup will keep the same catchphrases and tone hints.
 - Different clients will also share the style memory if they use the same JSON path.
 - Clients without this MCP will not see the style memory.
+- The host agent controls MCP process restarts. The JSON store is what keeps memory durable across restarts.
 
 ## Recommended config
 

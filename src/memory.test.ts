@@ -12,6 +12,7 @@ import {
   listStyleHabits,
   forgetStyleHabit,
   pinStyleHabit,
+  reviewStyleHabits,
 } from "./memory.js";
 import { loadStore, saveStore } from "./store.js";
 
@@ -139,6 +140,8 @@ describe("getStyleBrief", () => {
 
     const brief = await getStyleBrief();
     assert.ok(brief.includes("哈哈哈"));
+    assert.ok(brief.includes("How to apply:"));
+    assert.ok(brief.includes("Relevant habits:"));
   });
 
   it("returns fallback message when no active habits", async () => {
@@ -242,6 +245,90 @@ describe("getStyleBrief", () => {
 
     const brief = await getStyleBrief("technical_chat");
     assert.ok(brief.indexOf("zh-en-code-mix") < brief.indexOf("generic-friendly"));
+  });
+});
+
+describe("reviewStyleHabits", () => {
+  it("summarizes habits and suggests review actions", async () => {
+    const now = new Date().toISOString();
+    const store = await loadStore();
+    store.habits = [
+      {
+        id: "strong-active",
+        kind: "tone" as const,
+        text: "warm-soft-tone",
+        confidence: 0.8,
+        seenCount: 8,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        status: "active" as const,
+        pinned: false,
+        useWhen: ["casual_chat"],
+        avoidWhen: ["formal_writing"],
+      },
+      {
+        id: "weak-candidate",
+        kind: "idiolect" as const,
+        text: "one-off",
+        confidence: 0.1,
+        seenCount: 1,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        status: "candidate" as const,
+        pinned: false,
+        useWhen: [],
+        avoidWhen: [],
+      },
+      {
+        id: "old-archived",
+        kind: "catchphrase" as const,
+        text: "old",
+        confidence: 0.2,
+        seenCount: 5,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        status: "archived" as const,
+        pinned: false,
+        useWhen: [],
+        avoidWhen: [],
+      },
+    ];
+    await saveStore(store);
+
+    const review = await reviewStyleHabits();
+    assert.equal(review.summary.total, 3);
+    assert.equal(review.summary.active, 1);
+    assert.equal(review.summary.candidates, 1);
+    assert.equal(review.summary.archived, 1);
+
+    const strong = review.suggestions.find((item) => item.id === "strong-active");
+    const weak = review.suggestions.find((item) => item.id === "weak-candidate");
+    const archived = review.suggestions.find((item) => item.id === "old-archived");
+    assert.equal(strong?.suggestedAction, "pin");
+    assert.equal(weak?.suggestedAction, "forget");
+    assert.equal(archived?.suggestedAction, "forget");
+  });
+
+  it("respects review limit", async () => {
+    const now = new Date().toISOString();
+    const store = await loadStore();
+    store.habits = Array.from({ length: 5 }, (_, index) => ({
+      id: `habit-${index}`,
+      kind: "catchphrase" as const,
+      text: `habit-${index}`,
+      confidence: 0.4,
+      seenCount: index + 1,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      status: "candidate" as const,
+      pinned: false,
+      useWhen: [],
+      avoidWhen: [],
+    }));
+    await saveStore(store);
+
+    const review = await reviewStyleHabits(2);
+    assert.equal(review.suggestions.length, 2);
   });
 });
 

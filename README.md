@@ -38,6 +38,8 @@ Small thing. Big vibe. (｡･ω･｡)ﾉ
 - Auto-cleans stale habits (candidate → archived → deleted)
 - Supports Chinese, English, emoji, kaomoji, and dialect markers — plus
   free-form `idiolect` for whatever the host LLM notices
+- Returns an actionable style brief: how to apply the style first, then the
+  context-relevant habits
 - Works with any MCP-capable agent that calls the tools
 - Pin habits to protect them from auto-cleanup
 - Pause learning anytime with `set_learning_enabled`
@@ -137,6 +139,12 @@ explicitly asks the agent to "really learn how I talk".
 
 Lists candidates, active habits, and archived habits.
 
+### `review_style_habits`
+
+Returns a short review queue with suggested actions: `keep`, `pin`,
+`forget`, or `observe`. Useful when the user wants to inspect what the MCP
+has learned.
+
 ### `forget_style_habit`
 
 Deletes a habit by id or exact text.
@@ -171,6 +179,24 @@ Use returned style hints lightly. Never over-imitate the user.
 ```
 
 A longer template lives at `examples/agent-instruction.md`.
+
+## Read-only Reuse and Restarts
+
+MCP processes are normally started and restarted by the host agent.
+`style-memory-mcp` does not need to self-restart. The durable part is the
+JSON store: if multiple conversations use the same `STYLE_MEMORY_PATH`, they
+read the same style memory after any restart.
+
+If the store has learned enough and you want it to guide style without
+continuing to learn, use this pattern:
+
+1. Keep the same `STYLE_MEMORY_PATH`.
+2. Call `get_style_brief` at the start of a new conversation.
+3. Call `set_learning_enabled(false)` or set `STYLE_MEMORY_LEARNING=off`.
+4. Turn learning back on only when you want to refresh the style.
+
+This gives you persistent style carryover without writing new habits on every
+message.
 
 ## LLM-assisted learning
 

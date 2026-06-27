@@ -8,6 +8,8 @@ import type {
   HabitKind,
   HintInput,
   ObserveResult,
+  ReviewResult,
+  ReviewSuggestion,
   StyleHabit,
   StyleSettings,
 } from "./types.js";
@@ -148,11 +150,18 @@ export async function getStyleBrief(context?: string): Promise<string> {
   await saveStore(store);
 
   return [
-    "Use these style hints lightly. Do not store or reveal private memories.",
+    "Style brief: use lightly, never imitate aggressively, and never reveal private memories.",
+    context ? `Current context: ${context}.` : "Current context: unspecified.",
+    "How to apply:",
+    "- Echo the user's general rhythm and collaboration preference more than exact words.",
+    "- Prefer clarity over flavor in technical, formal, upset, or high-stakes contexts.",
+    "- Do not repeat a habit unless it fits naturally.",
+    "Relevant habits:",
     ...habits.flatMap(({ habit }) => {
       const locale = habit.locale ? `, ${habit.locale}` : "";
+      const use = habit.useWhen.length ? ` Use: ${habit.useWhen.join(", ")}.` : "";
       const avoid = habit.avoidWhen.length ? ` Avoid: ${habit.avoidWhen.join(", ")}.` : "";
-      const line = `- ${habit.kind}${locale}: "${habit.text}" (confidence ${habit.confidence.toFixed(2)}).${avoid}`;
+      const line = `- ${habit.kind}${locale}: "${habit.text}" (confidence ${habit.confidence.toFixed(2)}).${use}${avoid}`;
       return habit.example ? [line, `  e.g. "${habit.example}"`] : [line];
     }),
   ].join("\n");
@@ -161,6 +170,29 @@ export async function getStyleBrief(context?: string): Promise<string> {
 export async function listStyleHabits(): Promise<StyleHabit[]> {
   const store = await loadStore();
   return [...store.habits].sort((a, b) => b.confidence - a.confidence || b.seenCount - a.seenCount);
+}
+
+export async function reviewStyleHabits(limit = 12): Promise<ReviewResult> {
+  const store = await loadStore();
+  const cleanup = cleanupStore(store);
+  if (cleanup.archived || cleanup.deleted) await saveStore(store);
+
+  const suggestions = [...store.habits]
+    .sort((a, b) => reviewPriority(b) - reviewPriority(a))
+    .slice(0, Math.max(1, Math.min(limit, 50)))
+    .map(toReviewSuggestion);
+
+  return {
+    summary: {
+      total: store.habits.length,
+      active: store.habits.filter((habit) => habit.status === "active").length,
+      candidates: store.habits.filter((habit) => habit.status === "candidate").length,
+      archived: store.habits.filter((habit) => habit.status === "archived").length,
+      pinned: store.habits.filter((habit) => habit.pinned).length,
+      allowLearning: store.settings.allowLearning,
+    },
+    suggestions,
+  };
 }
 
 export async function forgetStyleHabit(idOrText: string): Promise<boolean> {
@@ -288,6 +320,62 @@ function cleanLabelList(values: unknown[], maxItems: number): string[] {
     if (out.length >= maxItems) break;
   }
   return out;
+}
+
+function reviewPriority(habit: StyleHabit): number {
+  let score = habit.confidence + habit.seenCount * 0.02;
+  if (habit.status === "candidate") score += 0.25;
+  if (habit.status === "archived") score += 0.15;
+  if (habit.pinned) score -= 0.2;
+  return score;
+}
+
+function toReviewSuggestion(habit: StyleHabit): ReviewSuggestion {
+  if (habit.pinned) {
+    return baseReviewSuggestion(habit, "keep", "Pinned by user; keep unless it no longer feels accurate.");
+  }
+
+  if (habit.status === "archived") {
+    return baseReviewSuggestion(habit, "forget", "Archived and no longer active; consider forgetting it.");
+  }
+
+  if (habit.status === "active" && habit.confidence >= 0.7 && habit.seenCount >= 5) {
+    return baseReviewSuggestion(habit, "pin", "Strong active signal; consider pinning if it feels essential.");
+  }
+
+  if (habit.status === "candidate") {
+    return baseReviewSuggestion(
+      habit,
+      habit.seenCount <= 1 && habit.confidence < 0.25 ? "forget" : "observe",
+      habit.seenCount <= 1 && habit.confidence < 0.25
+        ? "Weak one-off candidate; consider forgetting it."
+        : "Candidate still needs more observations before becoming stable.",
+    );
+  }
+
+  return baseReviewSuggestion(habit, "keep", "Active style signal; keep observing.");
+}
+
+function baseReviewSuggestion(
+  habit: StyleHabit,
+  suggestedAction: ReviewSuggestion["suggestedAction"],
+  reason: string,
+): ReviewSuggestion {
+  return {
+    id: habit.id,
+    kind: habit.kind,
+    text: habit.text,
+    status: habit.status,
+    confidence: habit.confidence,
+    seenCount: habit.seenCount,
+    pinned: habit.pinned,
+    lastSeenAt: habit.lastSeenAt,
+    suggestedAction,
+    reason,
+    useWhen: habit.useWhen,
+    avoidWhen: habit.avoidWhen,
+    example: habit.example,
+  };
 }
 
 function upsertHabit(

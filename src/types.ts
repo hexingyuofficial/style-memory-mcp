@@ -106,3 +106,33 @@ export interface ObserveResult {
     deleted: number;
   };
 }
+
+export type ReviewSuggestionAction = "keep" | "pin" | "forget" | "observe";
+
+export interface ReviewSuggestion {
+  id: string;
+  kind: HabitKind;
+  text: string;
+  status: HabitStatus;
+  confidence: number;
+  seenCount: number;
+  pinned: boolean;
+  lastSeenAt: string;
+  suggestedAction: ReviewSuggestionAction;
+  reason: string;
+  useWhen: string[];
+  avoidWhen: string[];
+  example?: string;
+}
+
+export interface ReviewResult {
+  summary: {
+    total: number;
+    active: number;
+    candidates: number;
+    archived: number;
+    pinned: number;
+    allowLearning: boolean;
+  };
+  suggestions: ReviewSuggestion[];
+}
