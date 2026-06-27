@@ -14,6 +14,13 @@ describe("isSensitive", () => {
     assert.equal(isSensitive("我忘了密码"), false);
     assert.equal(isSensitive("how do I reset my password"), false);
   });
+
+  it("flags common PII patterns", () => {
+    assert.equal(isSensitive("我的邮箱是 test@example.com"), true);
+    assert.equal(isSensitive("手机号 13800138000"), true);
+    assert.equal(isSensitive("身份证 11010519491231002X"), true);
+    assert.equal(isSensitive("银行卡 6222 0202 0202 0202"), true);
+  });
 });
 
 describe("sanitizeExample", () => {
@@ -40,6 +47,10 @@ describe("sanitizeExample", () => {
 
   it("drops anything that looks like a credential leak", () => {
     assert.equal(sanitizeExample("token=sk-abc123xyz456789longvalue"), undefined);
+  });
+
+  it("drops examples with PII", () => {
+    assert.equal(sanitizeExample("联系我 test@example.com"), undefined);
   });
 
   it("keeps natural-language mentions of password topics", () => {

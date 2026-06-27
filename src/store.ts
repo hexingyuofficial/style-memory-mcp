@@ -16,11 +16,11 @@ export function resolveDataPath(input?: string): string {
 export function defaultSettings(dataPath = DEFAULT_FILE): StyleSettings {
   return {
     dataPath,
-    minPromoteCount: Number(process.env.STYLE_MEMORY_MIN_PROMOTE_COUNT || 3),
-    candidateTtlDays: Number(process.env.STYLE_MEMORY_CANDIDATE_TTL_DAYS || 30),
-    inactiveTtlDays: Number(process.env.STYLE_MEMORY_INACTIVE_TTL_DAYS || 180),
-    maxBriefItems: Number(process.env.STYLE_MEMORY_MAX_BRIEF_ITEMS || 8),
-    maxExampleLen: Number(process.env.STYLE_MEMORY_MAX_EXAMPLE_LEN || 60),
+    minPromoteCount: readPositiveIntEnv("STYLE_MEMORY_MIN_PROMOTE_COUNT", 3, 1, 50),
+    candidateTtlDays: readPositiveIntEnv("STYLE_MEMORY_CANDIDATE_TTL_DAYS", 30, 1, 3650),
+    inactiveTtlDays: readPositiveIntEnv("STYLE_MEMORY_INACTIVE_TTL_DAYS", 180, 1, 3650),
+    maxBriefItems: readPositiveIntEnv("STYLE_MEMORY_MAX_BRIEF_ITEMS", 8, 1, 50),
+    maxExampleLen: readPositiveIntEnv("STYLE_MEMORY_MAX_EXAMPLE_LEN", 60, 1, 240),
     allowLearning: process.env.STYLE_MEMORY_LEARNING !== "off",
   };
 }
@@ -112,7 +112,7 @@ export function normalizeStore(store: StyleStore, dataPath: string): StyleStore 
 }
 
 export function normalizeHabit(habit: StyleHabit): StyleHabit {
-  const maxExampleLen = Number(process.env.STYLE_MEMORY_MAX_EXAMPLE_LEN || 60);
+  const maxExampleLen = readPositiveIntEnv("STYLE_MEMORY_MAX_EXAMPLE_LEN", 60, 1, 240);
 
   // v0.2: example may pre-exist on disk; clamp to length and drop falsy values.
   const rawExample = typeof habit.example === "string" ? habit.example : undefined;
@@ -150,13 +150,42 @@ export function normalizeHabit(habit: StyleHabit): StyleHabit {
 }
 
 export function makeId(kind: string, text: string, locale?: string): string {
-  const base = `${locale || "any"}-${kind}-${text}`
+  const readable = `${locale || "any"}-${kind}-${text}`
     .toLowerCase()
     .normalize("NFKD")
     .replace(/[^\p{Letter}\p{Number}]+/gu, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 72);
-  return base || `habit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    .slice(0, 56);
+  const prefix = readable || `${locale || "any"}-${kind}`;
+  return `${prefix}-h-${shortHash(`${locale || ""}\u0000${kind}\u0000${text}`)}`.slice(0, 72);
+}
+
+function readPositiveIntEnv(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    console.warn(
+      `[style-memory-mcp] Ignoring invalid ${name}=${JSON.stringify(raw)}; using ${fallback}.`,
+    );
+    return fallback;
+  }
+  return value;
+}
+
+function shortHash(input: string): string {
+  let hash = 0x811c9dc5;
+  for (const char of input) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36).padStart(7, "0");
 }
 
 /**

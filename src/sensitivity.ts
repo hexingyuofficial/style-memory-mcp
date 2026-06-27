@@ -23,6 +23,17 @@ const CREDENTIAL_PATTERNS = [
   /^[A-Z_]{3,30}=[A-Za-z0-9+/=_-]{12,}$/m,
 ];
 
+const PII_PATTERNS = [
+  // Email addresses.
+  /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i,
+  // Mainland China mobile numbers, with optional country code.
+  /(?:\+?86[-\s]?)?1[3-9]\d{9}/,
+  // Mainland China resident ID.
+  /\b\d{17}[\dXx]\b/,
+  // Bank-card-like digit runs. Keep the threshold high to avoid normal numbers.
+  /\b(?:\d[ -]?){16,19}\b/,
+];
+
 /**
  * Whether a message likely contains sensitive content that should not be
  * learned from. `context` is concatenated with `text` for the keyword
@@ -33,9 +44,10 @@ export function isSensitive(text: string, context?: string): boolean {
   const lower = combined.toLowerCase();
 
   const hitBlocklist = BLOCKED_TERMS.some((term) => lower.includes(term));
-  if (!hitBlocklist) return false;
+  const looksLikePii = PII_PATTERNS.some((pattern) => pattern.test(text));
+  if (!hitBlocklist) return looksLikePii;
 
-  return CREDENTIAL_PATTERNS.some((pattern) => pattern.test(text));
+  return CREDENTIAL_PATTERNS.some((pattern) => pattern.test(text)) || looksLikePii;
 }
 
 /**

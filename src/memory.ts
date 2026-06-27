@@ -1,4 +1,5 @@
 import { cleanupStore } from "./cleanup.js";
+import { evaluateHabitForContext } from "./context.js";
 import { extractHabits } from "./extract.js";
 import { isSensitive, sanitizeExample } from "./sensitivity.js";
 import { clamp, loadStore, makeId, MAX_SEEN_CONTEXTS, saveStore } from "./store.js";
@@ -128,8 +129,14 @@ export async function getStyleBrief(context?: string): Promise<string> {
 
   const habits = store.habits
     .filter((habit) => habit.status === "active" && habit.confidence >= 0.3)
-    .filter((habit) => !context || !habit.avoidWhen.includes(context))
-    .sort((a, b) => b.confidence - a.confidence || b.seenCount - a.seenCount)
+    .map((habit) => ({ habit, decision: evaluateHabitForContext(habit, context) }))
+    .filter((item) => item.decision.include)
+    .sort(
+      (a, b) =>
+        b.decision.score - a.decision.score ||
+        b.habit.confidence - a.habit.confidence ||
+        b.habit.seenCount - a.habit.seenCount,
+    )
     .slice(0, store.settings.maxBriefItems);
 
   if (habits.length === 0) {
@@ -137,12 +144,12 @@ export async function getStyleBrief(context?: string): Promise<string> {
   }
 
   const now = new Date().toISOString();
-  for (const habit of habits) habit.lastReturnedAt = now;
+  for (const { habit } of habits) habit.lastReturnedAt = now;
   await saveStore(store);
 
   return [
     "Use these style hints lightly. Do not store or reveal private memories.",
-    ...habits.flatMap((habit) => {
+    ...habits.flatMap(({ habit }) => {
       const locale = habit.locale ? `, ${habit.locale}` : "";
       const avoid = habit.avoidWhen.length ? ` Avoid: ${habit.avoidWhen.join(", ")}.` : "";
       const line = `- ${habit.kind}${locale}: "${habit.text}" (confidence ${habit.confidence.toFixed(2)}).${avoid}`;
@@ -216,6 +223,10 @@ function normalizeHints(
       ignored.push("hint_bad_text");
       continue;
     }
+    if (isSensitive(text)) {
+      ignored.push("hint_sensitive");
+      continue;
+    }
 
     // Scale the base delta by host LLM's self-rated confidence.
     // confidence 0 → 0.5×, 1 → 2× — clamped to [0.05, 0.25].
@@ -227,17 +238,23 @@ function normalizeHints(
     const confidenceDelta = Math.min(HINT_DELTA_MAX, Math.max(HINT_DELTA_MIN, scaled));
 
     const example = sanitizeExample(hint.example, maxExampleLen);
+    const notes =
+      typeof hint.notes === "string" && !isSensitive(hint.notes)
+        ? hint.notes.slice(0, 160)
+        : undefined;
 
     out.push({
       kind: hint.kind,
       text,
-      locale: typeof hint.locale === "string" ? hint.locale : undefined,
+      locale: cleanLabel(hint.locale, 40),
       confidenceDelta,
-      useWhen: Array.isArray(hint.useWhen) ? hint.useWhen.slice(0, 8) : defaultUseWhen(hint.kind),
+      useWhen: Array.isArray(hint.useWhen)
+        ? cleanLabelList(hint.useWhen, 8)
+        : defaultUseWhen(hint.kind),
       avoidWhen: Array.isArray(hint.avoidWhen)
-        ? hint.avoidWhen.slice(0, 8)
+        ? cleanLabelList(hint.avoidWhen, 8)
         : defaultAvoidWhen(hint.kind),
-      notes: typeof hint.notes === "string" ? hint.notes.slice(0, 160) : undefined,
+      notes,
       example,
       source: "hint",
     });
@@ -256,6 +273,23 @@ function defaultAvoidWhen(_kind: HabitKind): string[] {
   return ["formal_writing", "high_stakes_advice"];
 }
 
+function cleanLabel(value: unknown, maxLen: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  if (!text || text.length > maxLen || isSensitive(text)) return undefined;
+  return text;
+}
+
+function cleanLabelList(values: unknown[], maxItems: number): string[] {
+  const out: string[] = [];
+  for (const value of values) {
+    const label = cleanLabel(value, 40);
+    if (label && !out.includes(label)) out.push(label);
+    if (out.length >= maxItems) break;
+  }
+  return out;
+}
+
 function upsertHabit(
   habits: StyleHabit[],
   item: ExtractedHabit,
@@ -264,7 +298,13 @@ function upsertHabit(
   context?: string,
 ): { habit: StyleHabit; isNew: boolean } {
   const id = makeId(item.kind, item.text, item.locale);
-  let habit = habits.find((candidate) => candidate.id === id);
+  let habit = habits.find(
+    (candidate) =>
+      candidate.id === id ||
+      (candidate.kind === item.kind &&
+        candidate.text === item.text &&
+        (candidate.locale || "") === (item.locale || "")),
+  );
 
   const initialSeenContexts = context ? [context] : undefined;
 

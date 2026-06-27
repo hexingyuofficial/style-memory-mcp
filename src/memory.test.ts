@@ -170,6 +170,79 @@ describe("getStyleBrief", () => {
     assert.ok(!brief.includes("lol"));
     assert.ok(brief.includes("No stable style habits"));
   });
+
+  it("filters playful habits in high-stakes contexts", async () => {
+    const store = await loadStore();
+    store.habits = [
+      {
+        id: "test-emoji",
+        kind: "emoji" as const,
+        text: "👍",
+        confidence: 0.8,
+        seenCount: 8,
+        firstSeenAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        status: "active" as const,
+        pinned: false,
+        useWhen: ["playful_chat"],
+        avoidWhen: [],
+      },
+      {
+        id: "test-tone",
+        kind: "tone" as const,
+        text: "warm-soft-tone",
+        confidence: 0.6,
+        seenCount: 8,
+        firstSeenAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        status: "active" as const,
+        pinned: false,
+        useWhen: ["high_stakes_advice"],
+        avoidWhen: [],
+      },
+    ];
+    await saveStore(store);
+
+    const brief = await getStyleBrief("medical");
+    assert.ok(!brief.includes("👍"));
+    assert.ok(brief.includes("warm-soft-tone"));
+  });
+
+  it("prioritizes habits that match the requested context", async () => {
+    const store = await loadStore();
+    store.habits = [
+      {
+        id: "generic",
+        kind: "tone" as const,
+        text: "generic-friendly",
+        confidence: 0.7,
+        seenCount: 5,
+        firstSeenAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        status: "active" as const,
+        pinned: false,
+        useWhen: ["casual_chat"],
+        avoidWhen: [],
+      },
+      {
+        id: "technical",
+        kind: "language_mix" as const,
+        text: "zh-en-code-mix",
+        confidence: 0.6,
+        seenCount: 5,
+        firstSeenAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        status: "active" as const,
+        pinned: false,
+        useWhen: ["technical_chat"],
+        avoidWhen: [],
+      },
+    ];
+    await saveStore(store);
+
+    const brief = await getStyleBrief("technical_chat");
+    assert.ok(brief.indexOf("zh-en-code-mix") < brief.indexOf("generic-friendly"));
+  });
 });
 
 describe("listStyleHabits", () => {
@@ -458,6 +531,38 @@ describe("observeUserMessage with hints", () => {
     );
     assert.ok(result.ignored.includes("sensitive_context"));
     assert.equal(result.learned.length, 0);
+  });
+
+  it("rejects sensitive hint text", async () => {
+    const result = await observeUserMessage(
+      "hello",
+      "casual_chat",
+      [{ kind: "idiolect", text: "test@example.com", confidence: 0.9 }],
+    );
+    assert.ok(result.ignored.includes("hint_sensitive"));
+    assert.equal(result.learned.length, 0);
+  });
+
+  it("drops sensitive hint notes and labels while keeping the habit", async () => {
+    const result = await observeUserMessage(
+      "hello vibe",
+      "casual_chat",
+      [
+        {
+          kind: "idiolect",
+          text: "vibe",
+          notes: "email test@example.com",
+          useWhen: ["casual_chat", "test@example.com"],
+          avoidWhen: ["formal_writing", "13800138000"],
+          confidence: 0.6,
+        },
+      ],
+    );
+    const habit = result.learned.find((h) => h.text === "vibe");
+    assert.ok(habit);
+    assert.equal(habit!.notes, undefined);
+    assert.deepEqual(habit!.useWhen, ["casual_chat"]);
+    assert.deepEqual(habit!.avoidWhen, ["formal_writing"]);
   });
 });
 

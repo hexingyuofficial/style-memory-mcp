@@ -24,14 +24,16 @@ function safeHandler<T>(
 ): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
   return fn()
     .then((value) => jsonResult(value))
-    .catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[style-memory-mcp] Tool error:`, message);
-      return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
-        isError: true,
-      };
-    });
+    .catch(errorResult);
+}
+
+/** Wrap a text-only tool result without JSON-stringifying it. */
+function safeTextHandler(
+  fn: () => Promise<string>,
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  return fn()
+    .then((text) => textResult(text))
+    .catch(errorResult);
 }
 
 // Shared schema for a single host-LLM observation. Reused by both
@@ -122,11 +124,7 @@ server.registerTool(
         .describe("Short context label. Habits with matching avoidWhen will be omitted."),
     },
   },
-  async ({ context }) =>
-    safeHandler(async () => {
-      const brief = await getStyleBrief(context);
-      return { content: [{ type: "text" as const, text: brief }] };
-    }),
+  async ({ context }) => safeTextHandler(() => getStyleBrief(context)),
 );
 
 server.registerTool(
@@ -228,13 +226,26 @@ server.registerTool(
 );
 
 function jsonResult(value: unknown) {
+  return textResult(JSON.stringify(value, null, 2));
+}
+
+function textResult(text: string) {
   return {
     content: [
       {
         type: "text" as const,
-        text: JSON.stringify(value, null, 2),
+        text,
       },
     ],
+  };
+}
+
+function errorResult(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`[style-memory-mcp] Tool error:`, message);
+  return {
+    content: [{ type: "text" as const, text: `Error: ${message}` }],
+    isError: true,
   };
 }
 
