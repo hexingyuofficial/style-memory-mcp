@@ -6,6 +6,9 @@ Use `style-memory-mcp` only for lightweight conversational style.
 
 - At the start of a conversation, call `get_style_brief` to load the user's style.
 - After each user message, call `observe_user_message` with only the latest user message.
+- In long chats, silently call `get_style_brief` again every 12-20 user turns.
+- Also refresh the brief after major topic/context switches, before long important answers,
+  or when the user says things like "感觉飘了", "重新对齐一下", "不像我", or "回到我的风格".
 - Pass an optional `context` label when the conversation has a clear mode:
   - `casual_chat` — normal friendly chat
   - `technical_chat` — coding, debugging, technical discussion
@@ -109,8 +112,21 @@ per-message `observe_user_message`.
 
 ## How to use the brief
 
-- Use returned style hints **lightly** — as flavor, not a script.
+- Use returned style hints **lightly** — as alignment, not a script.
+- Shape the assistant's own stable collaboration style; do not copy the user's wording mechanically.
 - Follow interaction-profile preferences when they are relevant to the current context.
 - Never over-imitate the user.
 - Prefer clarity over style when the task is serious, private, medical, legal, financial, or safety-sensitive.
 - If the brief says "No stable style habits yet", just reply naturally.
+
+## User correction commands
+
+When the user says:
+
+- "感觉飘了" / "重新对齐一下": call `get_style_brief` before the next substantive reply.
+- "以后别这样" / "这个不是我的风格" / "别学这个": find the relevant style habit or interaction preference and call `forget_style_habit` or `forget_interaction_preference`.
+- "这个固定下来": call `pin_style_habit` or `pin_interaction_preference`.
+- "看看你学了什么": call `list_style_habits` and `list_interaction_profile`.
+- "打个分" / "现在稳不稳": call `get_style_memory_score`.
+- "先别继续学习": call `set_learning_enabled(false)`.
+- "重新打开学习": call `set_learning_enabled(true)`.

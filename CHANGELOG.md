@@ -2,6 +2,75 @@
 
 All notable changes to style-memory-mcp will be documented in this file.
 
+## [0.4.0] — 2026-06-27
+
+### Added
+
+- **Expanded dialect coverage** — `src/extract.ts` now ships markers for
+  Cantonese (`zh-CN-cantonese`), Northeast Mandarin (`zh-CN-dongbei`),
+  Shanghainese (`zh-CN-shanghai`), and Min Nan / Taiwanese
+  (`zh-TW-minnan`) alongside the original Sichuan set.
+- **Current internet slang** — new `ZH_INTERNET_SLANG` and
+  `EN_INTERNET_SLANG` arrays cover 2024–2026 web register
+  (`yyds`, `绝绝子`, `家人们`, `bet`, `no cap`, `it's giving`, etc.).
+  Tagged with locale `zh-CN-internet` / `en-internet` so the agent can
+  tell universally-safe phrases apart from slang that must be avoided
+  in legal / medical / serious-debugging replies.
+- **English slang word-boundary matching** — internet-slang regexes use
+  the same `\b`-anchored compilation as catchphrases, so `bet` does not
+  match `better`, `ate` does not match `atelier`, `mid` does not match
+  `midnight`.
+
+### Changed
+
+- **High-conviction hint bypass tightened** — a hint with self-rated
+  confidence ≥ ~0.71 still bypasses the cross-context promote gate,
+  but now also requires `seenCount ≥ HIGH_CONVICTION_MIN_SEEN` (2).
+  A single overconfident LLM call can no longer promote a habit to
+  `active` on first sighting; the three-strike safety net is restored.
+
+### Safety
+
+- New internet-slang entries carry per-entry `avoidWhen` lists — the
+  collector does not flatten them to a generic default. Phrases like
+  `yyds`, `栓Q`, `老登`, `mid`, `delulu` will not bleed into formal,
+  legal, medical, or user-upset contexts.
+
+## [0.3.0] — 2026-06-27
+
+### Added
+
+- **Interaction profile management tools** — new
+  `review_interaction_profile`, `forget_interaction_preference`, and
+  `pin_interaction_preference` tools so collaboration preferences can be
+  reviewed, removed, or pinned just like style habits.
+- **Style memory health score** — new `get_style_memory_score` tool returns
+  readiness, stability, freshness, drift risk, over-imitation risk,
+  `briefRefreshRecommended`, counts, and actionable recommendations.
+- **Integration guide** — new `docs/INTEGRATION.zh-CN.md` documents generic
+  MCP setup, Doubao-style setup notes, shared JSON store usage, and the
+  automatic brief refresh protocol.
+- **User guide** — new `docs/USER-GUIDE.zh-CN.md` explains natural commands
+  such as "感觉飘了", "以后别这样", "这个固定下来", and "打个分".
+
+### Changed
+
+- Agent instruction template now tells host agents to refresh
+  `get_style_brief` every 12–20 user turns in long chats, after context
+  switches, before important long answers, and whenever the user says the
+  style feels off.
+- README files now document interaction-profile correction, health scoring,
+  drift refresh behavior, and the distinction between stable assistant style
+  alignment and mechanical user imitation.
+- Package metadata now includes the `docs` directory and aligns the package,
+  lockfile, and MCP server version at `0.3.0`.
+
+### Safety
+
+- The new profile-management tools keep the same boundary: local JSON only,
+  no network, no LLM calls inside the MCP server, no full conversation logs,
+  and no personality/psychology/diagnosis labels.
+
 ## [0.2.0] — 2026-06-27
 
 ### Added
@@ -47,10 +116,10 @@ All notable changes to style-memory-mcp will be documented in this file.
 ### Backward compatibility
 
 - v0.1 stores load unchanged. Missing `example` / `seenContexts` / `source`
-  fields are filled in safely. All 36 v0.1 tests continue to pass; 20 new
-  tests cover the new paths.
+  fields are filled in safely. All previous v0.1 tests continue to pass, and
+  new tests cover the added paths.
 
-## [0.1.0] — 2024-06-27
+## [0.1.0] — 2026-06-27
 
 ### Added
 
@@ -64,7 +133,7 @@ All notable changes to style-memory-mcp will be documented in this file.
 - Atomic JSON file writes (tmp → rename)
 - Write queue to serialize concurrent saves (prevents race conditions)
 - Bilingual README (English + 简体中文)
-- Comprehensive test suite (36 tests covering extract, memory, cleanup, sensitivity)
+- Comprehensive test suite covering extract, memory, cleanup, sensitivity, and store
 - Configurable via environment variables
 - Pre-compiled English catchphrase regexes for performance
 - Error handling on all MCP tool handlers (try/catch with MCP isError response)

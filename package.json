@@ -1,6 +1,6 @@
 {
   "name": "style-memory-mcp",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "A tiny local MCP server that learns conversational style without storing private memories.",
   "type": "module",
   "bin": {
@@ -10,6 +10,7 @@
     "dist",
     "README.md",
     "README.zh-CN.md",
+    "docs",
     "examples",
     "CHANGELOG.md"
   ],
@@ -36,7 +37,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^3.23.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.4",

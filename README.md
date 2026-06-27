@@ -38,10 +38,19 @@ Small thing. Big vibe. (｡･ω･｡)ﾉ
 - Auto-cleans stale habits (candidate → archived → deleted)
 - Supports Chinese, English, emoji, kaomoji, and dialect markers — plus
   free-form `idiolect` for whatever the host LLM notices
+- Built-in dictionary covers Sichuan, Cantonese, Northeast (Dongbei),
+  Shanghainese, and Min Nan / Taiwanese markers, plus current
+  (2024–2026) Chinese and English internet slang. Locale-tagged so the
+  agent can tell universally-safe phrases apart from slang that must
+  stay out of legal / medical / serious replies.
 - Returns an actionable style brief: how to apply the style first, then the
   context-relevant habits
 - Supports an `interaction profile`: how the user prefers the agent to
   collaborate, without personality labels
+- Interaction-profile preferences can be reviewed, pinned, or forgotten just
+  like style habits
+- Includes a lightweight `get_style_memory_score` health check for readiness,
+  drift risk, over-imitation risk, and brief refresh recommendations
 - Works with any MCP-capable agent that calls the tools
 - Pin habits to protect them from auto-cleanup
 - Pause learning anytime with `set_learning_enabled`
@@ -101,6 +110,10 @@ You can customize the JSON store location:
 }
 ```
 
+See [docs/INTEGRATION.zh-CN.md](docs/INTEGRATION.zh-CN.md) for a practical
+Chinese integration guide, including Doubao-style setup notes and the
+recommended automatic brief refresh protocol.
+
 ### Environment Variables
 
 | Variable | Default | Description |
@@ -159,17 +172,36 @@ Returns a short review queue with suggested actions: `keep`, `pin`,
 `forget`, or `observe`. Useful when the user wants to inspect what the MCP
 has learned.
 
+### `review_interaction_profile`
+
+Returns a short review queue for collaboration preferences with suggested
+actions: `keep`, `pin`, `forget`, or `observe`.
+
 ### `forget_style_habit`
 
 Deletes a habit by id or exact text.
+
+### `forget_interaction_preference`
+
+Deletes a collaboration preference by id or exact text.
 
 ### `pin_style_habit`
 
 Pins a habit so cleanup will not delete it.
 
+### `pin_interaction_preference`
+
+Pins a collaboration preference so cleanup will not delete it.
+
 ### `set_learning_enabled`
 
 Turns learning on or off.
+
+### `get_style_memory_score`
+
+Scores whether the local style memory is usable and stable. Returns
+readiness, stability, freshness, drift risk, over-imitation risk, whether
+`get_style_brief` should be refreshed, and short recommendations.
 
 ### `get_style_memory_status`
 
@@ -183,13 +215,17 @@ Add something like this to your agent or skill:
 Use style-memory-mcp for lightweight conversational style only.
 At the start of a conversation, call get_style_brief.
 After each user message, call observe_user_message with only the latest user message.
+In long chats, silently call get_style_brief again every 12-20 user turns,
+after major context switches, before long important answers, or whenever the
+user says things like "感觉飘了" or "重新对齐一下".
 If you spot a personal habit the built-in dictionary likely wouldn't catch
 (e.g. a self-invented sentence-final particle, an unusual structural quirk),
 add it as a hints[] entry on the same observe_user_message call.
 Three repetitions across two distinct contexts are needed before a habit
 becomes stable, so you don't need to be right on the first try.
 Do not send secrets, private memories, files, or full conversation logs.
-Use returned style hints lightly. Never over-imitate the user.
+Use returned style hints lightly. Shape the assistant's own stable
+collaboration style; never copy the user mechanically.
 ```
 
 A longer template lives at `examples/agent-instruction.md`.
@@ -234,6 +270,25 @@ For a one-shot seed, use `distill_interaction_profile` with 1–8
 high-conviction preferences. Active profile preferences appear in
 `get_style_brief` alongside style habits, but the brief stays short and
 context-filtered.
+
+If a profile preference is wrong, use `forget_interaction_preference`. If it
+is important and should survive cleanup, use `pin_interaction_preference`.
+Use `review_interaction_profile` for a short correction queue.
+
+## Drift and Refresh
+
+The MCP server cannot push context into the host agent by itself. The host
+agent should refresh its alignment brief:
+
+- at the start of a new chat,
+- every 12–20 user turns in long chats,
+- after major topic or context switches,
+- before long or important answers,
+- when the user says "感觉飘了", "重新对齐一下", "不像我", or similar.
+
+For a quick health check, call `get_style_memory_score`. If
+`briefRefreshRecommended` is `true`, call `get_style_brief` before the next
+substantial reply.
 
 ## Read-only Reuse and Restarts
 
@@ -350,6 +405,25 @@ npm test
 # Development mode (auto-reload with tsx)
 npm run dev
 ```
+
+## Dictionary size & token cost
+
+The built-in dictionary (dialect markers, catchphrases, internet slang)
+lives in `src/extract.ts` and is **never** sent to the LLM. It only
+participates in local `text.includes()` / regex scans. Doubling the
+dictionary costs zero extra tokens per turn.
+
+The only payloads that reach the host LLM are:
+
+1. `get_style_brief` output — bounded by `STYLE_MEMORY_MAX_BRIEF_ITEMS`
+   (default 8). The brief surfaces only **habits the user has actually
+   exhibited and which were promoted to active**, not whatever sits in
+   the dictionary.
+2. Tool descriptions — fixed in `server.ts`, independent of dictionary
+   size.
+
+So if your dialect or slang isn't covered, please send a PR with new
+entries — it only improves recall and won't bloat anyone's prompts.
 
 ## Privacy
 

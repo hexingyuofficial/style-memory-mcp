@@ -186,6 +186,34 @@ export interface ReviewResult {
   suggestions: ReviewSuggestion[];
 }
 
+export interface ProfileReviewSuggestion {
+  id: string;
+  category: InteractionPreferenceCategory;
+  text: string;
+  status: HabitStatus;
+  confidence: number;
+  seenCount: number;
+  pinned: boolean;
+  lastSeenAt: string;
+  suggestedAction: ReviewSuggestionAction;
+  reason: string;
+  useWhen: string[];
+  avoidWhen: string[];
+  example?: string;
+}
+
+export interface ProfileReviewResult {
+  summary: {
+    total: number;
+    active: number;
+    candidates: number;
+    archived: number;
+    pinned: number;
+    allowLearning: boolean;
+  };
+  suggestions: ProfileReviewSuggestion[];
+}
+
 export interface ProfileDistillResult {
   learned: InteractionPreference[];
   updated: InteractionPreference[];
@@ -194,4 +222,26 @@ export interface ProfileDistillResult {
     archived: number;
     deleted: number;
   };
+}
+
+export interface StyleMemoryScore {
+  overall: number;
+  readiness: number;
+  stability: number;
+  freshness: number;
+  driftRisk: number;
+  overfitRisk: number;
+  briefRefreshRecommended: boolean;
+  counts: {
+    habits: number;
+    activeHabits: number;
+    candidateHabits: number;
+    archivedHabits: number;
+    profilePreferences: number;
+    activeProfilePreferences: number;
+    candidateProfilePreferences: number;
+    archivedProfilePreferences: number;
+    pinnedItems: number;
+  };
+  recommendations: string[];
 }

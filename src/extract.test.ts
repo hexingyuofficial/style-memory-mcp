@@ -31,6 +31,99 @@ describe("extractHabits", () => {
     assert.ok(habit!.avoidWhen.includes("serious_debugging"));
   });
 
+  it("detects Cantonese dialect markers", () => {
+    const result = extractHabits("唔该靓仔，今日得闲唔？");
+    const cantonese = result.filter(h => h.kind === "dialect_marker" && h.locale === "zh-CN-cantonese");
+    const texts = cantonese.map(h => h.text);
+    assert.ok(texts.includes("唔该"));
+    assert.ok(texts.includes("靓仔"));
+    assert.ok(texts.includes("得闲"));
+  });
+
+  it("detects Dongbei dialect markers", () => {
+    const result = extractHabits("老铁这事儿贼拉得劲，咋整？");
+    const dongbei = result.filter(h => h.kind === "dialect_marker" && h.locale === "zh-CN-dongbei");
+    const texts = dongbei.map(h => h.text);
+    assert.ok(texts.includes("老铁"));
+    assert.ok(texts.includes("贼拉"));
+    assert.ok(texts.includes("得劲"));
+    assert.ok(texts.includes("咋整"));
+  });
+
+  it("detects Shanghainese dialect markers", () => {
+    const result = extractHabits("侬好，今朝去白相伐？嗲");
+    const shanghai = result.filter(h => h.kind === "dialect_marker" && h.locale === "zh-CN-shanghai");
+    const texts = shanghai.map(h => h.text);
+    assert.ok(texts.includes("侬好"));
+    assert.ok(texts.includes("白相"));
+    assert.ok(texts.includes("嗲"));
+  });
+
+  it("detects Min Nan / Taiwanese dialect markers", () => {
+    const result = extractHabits("呷饱没？阿娘喂这价钱按怎");
+    const minnan = result.filter(h => h.kind === "dialect_marker" && h.locale === "zh-TW-minnan");
+    const texts = minnan.map(h => h.text);
+    assert.ok(texts.includes("呷饱"));
+    assert.ok(texts.includes("阿娘喂"));
+    assert.ok(texts.includes("按怎"));
+  });
+
+  it("marks harsh dialect markers (扑街) with strict avoidWhen", () => {
+    const result = extractHabits("扑街啦");
+    const habit = result.find(h => h.text === "扑街");
+    assert.ok(habit);
+    assert.ok(habit!.avoidWhen.includes("user_upset"));
+    assert.ok(habit!.avoidWhen.includes("high_stakes_advice"));
+  });
+
+  // ---- internet slang ----
+
+  it("detects current Chinese internet slang", () => {
+    const result = extractHabits("这个真的yyds，谁懂啊家人们，绝绝子");
+    const slang = result.filter(h => h.locale === "zh-CN-internet").map(h => h.text);
+    assert.ok(slang.includes("yyds"));
+    assert.ok(slang.includes("谁懂啊"));
+    assert.ok(slang.includes("家人们"));
+    assert.ok(slang.includes("绝绝子"));
+  });
+
+  it("tags Chinese internet slang with stricter avoidWhen than generic catchphrases", () => {
+    const result = extractHabits("yyds");
+    const habit = result.find(h => h.text === "yyds" && h.locale === "zh-CN-internet");
+    assert.ok(habit);
+    // yyds must never bleed into legal/medical/serious_debugging replies
+    assert.ok(habit!.avoidWhen.includes("legal"));
+    assert.ok(habit!.avoidWhen.includes("medical"));
+    assert.ok(habit!.avoidWhen.includes("serious_debugging"));
+  });
+
+  it("detects current English Gen Z slang with word boundaries", () => {
+    const result = extractHabits("no cap this slaps, deadass goated");
+    const slang = result.filter(h => h.locale === "en-internet").map(h => h.text);
+    assert.ok(slang.includes("no cap"));
+    assert.ok(slang.includes("slaps"));
+    assert.ok(slang.includes("deadass"));
+    assert.ok(slang.includes("goated"));
+  });
+
+  it("does not match English slang embedded in unrelated words", () => {
+    // "bet" must not match "better"; "ate" must not match "atelier" / "plate";
+    // "mid" must not match "midnight"; "sus" must not match "suspended".
+    const result = extractHabits("the better plate at midnight was suspended");
+    const slang = result.filter(h => h.locale === "en-internet").map(h => h.text);
+    assert.ok(!slang.includes("bet"));
+    assert.ok(!slang.includes("ate"));
+    assert.ok(!slang.includes("mid"));
+    assert.ok(!slang.includes("sus"));
+  });
+
+  it("detects multi-word English slang ('it's giving', 'hits different')", () => {
+    const result = extractHabits("it's giving main character energy, this hits different");
+    const slang = result.filter(h => h.locale === "en-internet").map(h => h.text);
+    assert.ok(slang.includes("it's giving"));
+    assert.ok(slang.includes("hits different"));
+  });
+
   // ---- catchphrases ----
 
   it("detects Chinese catchphrases", () => {

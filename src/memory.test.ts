@@ -10,10 +10,14 @@ import {
   distillRecentStyle,
   observeUserMessage,
   getStyleBrief,
+  getStyleMemoryScore,
   listInteractionProfile,
   listStyleHabits,
+  forgetInteractionPreference,
   forgetStyleHabit,
+  pinInteractionPreference,
   pinStyleHabit,
+  reviewInteractionProfile,
   reviewStyleHabits,
 } from "./memory.js";
 import { loadStore, saveStore } from "./store.js";
@@ -604,6 +608,27 @@ describe("observeUserMessage with hints", () => {
     delete process.env.STYLE_MEMORY_MIN_PROMOTE_COUNT;
   });
 
+  it("a single high-confidence hint does NOT promote on first sighting", async () => {
+    // Regression guard: an overconfident LLM that fires confidence=1.0 once
+    // must not be able to insta-promote anything to active. The minPromote
+    // gate (seenCount ≥ 3) still applies, AND the high-conviction bypass
+    // requires seenCount ≥ HIGH_CONVICTION_MIN_SEEN even after minPromote
+    // is reached, in case a future change relaxes minPromote globally.
+    process.env.STYLE_MEMORY_MIN_PROMOTE_COUNT = "1";
+    await observeUserMessage("人生海海", "casual_chat", [
+      { kind: "idiolect", text: "海海", confidence: 1.0 },
+    ]);
+    const habits = await listStyleHabits();
+    const haihai = habits.find((h) => h.text === "海海");
+    assert.ok(haihai, "hint should still be learned as a candidate");
+    assert.equal(
+      haihai!.status,
+      "candidate",
+      "one-shot overconfident hint must stay a candidate even when minPromoteCount=1",
+    );
+    delete process.env.STYLE_MEMORY_MIN_PROMOTE_COUNT;
+  });
+
   it("drops sensitive example but keeps the hint itself", async () => {
     const result = await observeUserMessage(
       "我打字超快",
@@ -875,6 +900,149 @@ describe("interaction profile", () => {
     const profile = await listInteractionProfile();
     assert.equal(profile[0].text, "high");
     assert.equal(profile[1].text, "low");
+  });
+
+  it("reviews interaction profile preferences with suggested actions", async () => {
+    const now = new Date().toISOString();
+    const store = await loadStore();
+    store.profile.preferences = [
+      {
+        id: "strong-profile",
+        category: "workflow" as const,
+        text: "prefers plan, implement, then verify",
+        confidence: 0.8,
+        seenCount: 8,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        status: "active" as const,
+        pinned: false,
+        useWhen: ["technical_chat"],
+        avoidWhen: [],
+      },
+      {
+        id: "weak-profile",
+        category: "collaboration" as const,
+        text: "weak one-off",
+        confidence: 0.1,
+        seenCount: 1,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        status: "candidate" as const,
+        pinned: false,
+        useWhen: [],
+        avoidWhen: [],
+      },
+    ];
+    await saveStore(store);
+
+    const review = await reviewInteractionProfile();
+    assert.equal(review.summary.total, 2);
+    assert.equal(review.summary.active, 1);
+    assert.equal(review.summary.candidates, 1);
+    assert.equal(
+      review.suggestions.find((item) => item.id === "strong-profile")?.suggestedAction,
+      "pin",
+    );
+    assert.equal(
+      review.suggestions.find((item) => item.id === "weak-profile")?.suggestedAction,
+      "forget",
+    );
+  });
+
+  it("forgets interaction preferences by exact text", async () => {
+    const now = new Date().toISOString();
+    const store = await loadStore();
+    store.profile.preferences = [
+      {
+        id: "profile-to-forget",
+        category: "tone_boundary" as const,
+        text: "avoid too many kaomoji",
+        confidence: 0.6,
+        seenCount: 3,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        status: "active" as const,
+        pinned: false,
+        useWhen: ["casual_chat"],
+        avoidWhen: [],
+      },
+    ];
+    await saveStore(store);
+
+    const removed = await forgetInteractionPreference("avoid too many kaomoji");
+    assert.equal(removed, true);
+    assert.equal((await listInteractionProfile()).length, 0);
+  });
+
+  it("pins and unpins interaction preferences", async () => {
+    const now = new Date().toISOString();
+    const store = await loadStore();
+    store.profile.preferences = [
+      {
+        id: "profile-to-pin",
+        category: "response_structure" as const,
+        text: "prefers conclusions before details",
+        confidence: 0.7,
+        seenCount: 4,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        status: "active" as const,
+        pinned: false,
+        useWhen: ["general"],
+        avoidWhen: [],
+      },
+    ];
+    await saveStore(store);
+
+    assert.equal(await pinInteractionPreference("prefers conclusions before details", true), true);
+    assert.equal((await listInteractionProfile())[0].pinned, true);
+    assert.equal(await pinInteractionPreference("prefers conclusions before details", false), true);
+    assert.equal((await listInteractionProfile())[0].pinned, false);
+  });
+
+  it("scores style memory and recommends refreshing the brief after updates", async () => {
+    const earlier = new Date(Date.now() - 60_000).toISOString();
+    const now = new Date().toISOString();
+    const store = await loadStore();
+    store.habits = [
+      {
+        id: "active-habit",
+        kind: "emoji" as const,
+        text: "(｡･ω･｡)",
+        confidence: 0.7,
+        seenCount: 5,
+        firstSeenAt: earlier,
+        lastSeenAt: now,
+        lastReturnedAt: earlier,
+        status: "active" as const,
+        pinned: false,
+        useWhen: ["casual_chat"],
+        avoidWhen: ["formal_writing"],
+      },
+    ];
+    store.profile.preferences = [
+      {
+        id: "active-profile",
+        category: "workflow" as const,
+        text: "prefers plan, implement, then verify",
+        confidence: 0.8,
+        seenCount: 5,
+        firstSeenAt: earlier,
+        lastSeenAt: now,
+        lastReturnedAt: earlier,
+        status: "active" as const,
+        pinned: false,
+        useWhen: ["technical_chat"],
+        avoidWhen: [],
+      },
+    ];
+    await saveStore(store);
+
+    const score = await getStyleMemoryScore();
+    assert.ok(score.overall > 0);
+    assert.ok(score.readiness >= 40);
+    assert.equal(score.briefRefreshRecommended, true);
+    assert.ok(score.recommendations.some((item) => item.includes("get_style_brief")));
   });
 });
 

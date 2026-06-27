@@ -33,8 +33,13 @@
 - 升级时还要求该习惯出现在**≥2 个不同的 context 标签**下（借鉴 nuwa-skill 的跨域验证）
 - 自动清理过期习惯（候选 → 归档 → 删除）
 - 支持中文、英文、emoji、颜文字、方言标记 — 以及给 host LLM 兜底用的 free-form `idiolect` 类型
+- 内置字典覆盖四川话、粤语、东北话、上海话、闽南/台语方言标记，以及当下
+  （2024–2026）的中英文网络用语。每条都打了 locale 标签，并按需配置 `avoidWhen`，
+  让 agent 能区分"通用安全的口头禅"和"在正经/法律/医疗回答里必须回避的网络梗"
 - 返回面向 agent 的可执行风格简报：先讲如何使用，再给当前场景相关习惯
 - 支持 `interaction profile`：记录"用户喜欢 AI 如何协作"，而不是给用户贴性格标签
+- 协作偏好也可以 review、forget、pin，和口癖/语气习惯一样可管理
+- 提供 `get_style_memory_score` 健康评分：可用度、稳定度、新鲜度、漂移风险、过度模仿风险、是否建议重新拉 brief
 - 兼容任何支持 MCP 工具的 agent
 - 可固定习惯以防止自动清理
 - 随时可通过 `set_learning_enabled` 暂停学习
@@ -77,6 +82,10 @@ npm run dev
   }
 }
 ```
+
+接入细节见 [docs/INTEGRATION.zh-CN.md](docs/INTEGRATION.zh-CN.md)，里面包含通用 MCP 配置、豆包接入备忘，以及长聊天自动重新对齐协议。
+
+真实使用方式见 [docs/USER-GUIDE.zh-CN.md](docs/USER-GUIDE.zh-CN.md)。
 
 可以自定义 JSON 存储位置：
 
@@ -142,17 +151,33 @@ Agent 应在对话开始前或写友好回复前调用此工具。
 
 返回一份简短的审查队列，给每条习惯建议 `keep`、`pin`、`forget` 或 `observe`。适合用户定期看看 MCP 到底学了什么。
 
+### `review_interaction_profile`
+
+返回协作偏好的审查队列，给每条偏好建议 `keep`、`pin`、`forget` 或 `observe`。
+
 ### `forget_style_habit`
 
 通过 id 或确切文本删除一个习惯。
+
+### `forget_interaction_preference`
+
+通过 id 或确切文本删除一个协作偏好。
 
 ### `pin_style_habit`
 
 固定（或取消固定）一个习惯，防止被自动清理。
 
+### `pin_interaction_preference`
+
+固定（或取消固定）一个协作偏好，防止被自动清理。
+
 ### `set_learning_enabled`
 
 开启或关闭风格学习。
+
+### `get_style_memory_score`
+
+给当前风格记忆打分，返回可用度、稳定度、新鲜度、漂移风险、过度模仿风险、是否建议重新调用 `get_style_brief`，以及简短建议。
 
 ### `get_style_memory_status`
 
@@ -166,12 +191,14 @@ Agent 应在对话开始前或写友好回复前调用此工具。
 使用 style-memory-mcp 仅用于轻量级对话风格。
 对话开始时调用 get_style_brief。
 每次用户消息后调用 observe_user_message，仅传入最新消息。
+长聊天里每 12-20 个用户回合静默重新调用 get_style_brief；
+话题大切换、长回答前，或者用户说"感觉飘了""重新对齐一下"时也重新调用。
 如果你注意到内置字典大概率覆盖不到的个人化口癖
 （比如自创句尾助词、罕见句式结构），把它放进同一次调用的 hints[] 数组里。
 "跨 2 个 context + 累计 3 次"才会被升为稳定习惯，
 所以你不需要一次就抓对——三次后会自动学到。
 不要传入密码、私人记忆、文件或完整对话日志。
-轻度参考返回的风格提示。永远不要过度模仿用户。
+轻度参考返回的风格提示。形成 agent 自己稳定的协作风格，不要机械模仿用户。
 ```
 
 完整范本见 `examples/agent-instruction.md`。
@@ -211,6 +238,20 @@ Host agent 可以在 `observe_user_message` 里附带 `profileHints`：
 ```
 
 也可以用 `distill_interaction_profile` 一次性写入 1–8 条高置信度协作偏好。它们会和口癖/语气 habit 一起进入 `get_style_brief`，但 brief 仍然保持短小，只返回当前场景相关内容。
+
+如果协作偏好学错了，用 `forget_interaction_preference` 删除；如果某条偏好很重要，用 `pin_interaction_preference` 固定；定期用 `review_interaction_profile` 查看是否需要清理。
+
+## 漂移与重新对齐
+
+MCP 服务不能主动把 brief 推进宿主 agent 的上下文。自动重新对齐要靠宿主 agent 按固定节奏调用：
+
+- 新聊天开始时调用 `get_style_brief`
+- 长聊天每 12–20 个用户回合重新调用一次
+- 话题/场景大切换后重新调用
+- 长回答或重要回答前重新调用
+- 用户说"感觉飘了""重新对齐一下""不像我"时立即重新调用
+
+也可以调用 `get_style_memory_score` 看健康评分。如果 `briefRefreshRecommended` 是 `true`，下一次重要回复前应该重新调用 `get_style_brief`。
 
 ## 只读复用与重启
 
@@ -307,6 +348,21 @@ npm test
 # 开发模式（tsx 热重载）
 npm run dev
 ```
+
+## 字典体积 & token 成本
+
+内置字典（方言、口头禅、网络用语）住在 `src/extract.ts` 里，**永远不会**
+被发给 LLM。它们只参与本地 `text.includes()` / 正则扫描。字典翻一倍，每次
+对话也是零额外 token。
+
+真正会进入宿主 LLM 上下文的只有两处：
+
+1. `get_style_brief` 输出 — 由 `STYLE_MEMORY_MAX_BRIEF_ITEMS`（默认 8）硬上限保护。
+   brief 只挑**用户实际用过、且已经升级为 active 的习惯**，不是字典里有什么就吐什么。
+2. 工具描述 — 写死在 `server.ts`，跟字典大小无关。
+
+所以如果你的方言或网络用语没被覆盖，请大胆提 PR 加新条目 —— 只会提升召回率，
+不会让任何人的 prompt 变长。
 
 ## 隐私
 

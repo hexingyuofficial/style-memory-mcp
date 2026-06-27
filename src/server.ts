@@ -6,19 +6,23 @@ import { z } from "zod";
 import {
   distillInteractionProfile,
   distillRecentStyle,
+  forgetInteractionPreference,
   forgetStyleHabit,
   getStyleBrief,
+  getStyleMemoryScore,
   listInteractionProfile,
   listStyleHabits,
   observeUserMessage,
+  pinInteractionPreference,
   pinStyleHabit,
+  reviewInteractionProfile,
   reviewStyleHabits,
 } from "./memory.js";
 import { loadStore, saveStore } from "./store.js";
 
 const server = new McpServer({
   name: "style-memory-mcp",
-  version: "0.2.0",
+  version: "0.4.0",
 });
 
 /** Wrap a tool result in a safe MCP content response, catching errors. */
@@ -249,6 +253,25 @@ server.registerTool(
 );
 
 server.registerTool(
+  "review_interaction_profile",
+  {
+    title: "Review interaction profile",
+    description:
+      "Return a concise review queue for stored collaboration preferences, with suggested actions such as keep, pin, forget, or observe.",
+    inputSchema: {
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .default(12)
+        .describe("Maximum number of profile preferences to include in the review queue."),
+    },
+  },
+  async ({ limit }) => safeHandler(() => reviewInteractionProfile(limit)),
+);
+
+server.registerTool(
   "forget_style_habit",
   {
     title: "Forget style habit",
@@ -259,6 +282,19 @@ server.registerTool(
   },
   async ({ idOrText }) =>
     safeHandler(async () => ({ removed: await forgetStyleHabit(idOrText) })),
+);
+
+server.registerTool(
+  "forget_interaction_preference",
+  {
+    title: "Forget interaction preference",
+    description: "Delete a collaboration preference by id or exact text.",
+    inputSchema: {
+      idOrText: z.string().min(1).describe("Preference id or exact preference text."),
+    },
+  },
+  async ({ idOrText }) =>
+    safeHandler(async () => ({ removed: await forgetInteractionPreference(idOrText) })),
 );
 
 server.registerTool(
@@ -273,6 +309,20 @@ server.registerTool(
   },
   async ({ idOrText, pinned }) =>
     safeHandler(async () => ({ updated: await pinStyleHabit(idOrText, pinned) })),
+);
+
+server.registerTool(
+  "pin_interaction_preference",
+  {
+    title: "Pin interaction preference",
+    description: "Pin or unpin a collaboration preference so cleanup will not delete it.",
+    inputSchema: {
+      idOrText: z.string().min(1).describe("Preference id or exact preference text."),
+      pinned: z.boolean().default(true).describe("Whether the preference should be pinned."),
+    },
+  },
+  async ({ idOrText, pinned }) =>
+    safeHandler(async () => ({ updated: await pinInteractionPreference(idOrText, pinned) })),
 );
 
 server.registerTool(
@@ -291,6 +341,17 @@ server.registerTool(
       await saveStore(store);
       return { allowLearning: enabled };
     }),
+);
+
+server.registerTool(
+  "get_style_memory_score",
+  {
+    title: "Get style memory score",
+    description:
+      "Score whether the local style memory is usable, stable, fresh, and at risk of drift or over-imitation.",
+    inputSchema: {},
+  },
+  async () => safeHandler(() => getStyleMemoryScore()),
 );
 
 server.registerTool(
