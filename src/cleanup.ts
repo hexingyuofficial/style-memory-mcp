@@ -1,4 +1,4 @@
-import type { StyleHabit, StyleStore } from "./types.js";
+import type { InteractionPreference, StyleHabit, StyleStore } from "./types.js";
 import { daysBetween } from "./store.js";
 
 export interface CleanupResult {
@@ -56,6 +56,56 @@ export function cleanupStore(store: StyleStore, now = new Date()): CleanupResult
   }
 
   store.habits = kept;
+  store.profile.preferences = cleanupItems(
+    store.profile.preferences,
+    store,
+    () => archived++,
+    () => deleted++,
+    now,
+  );
   store.lastCleanupAt = now.toISOString();
   return { archived, deleted };
+}
+
+function cleanupItems<T extends StyleHabit | InteractionPreference>(
+  items: T[],
+  store: StyleStore,
+  onArchived: () => void,
+  onDeleted: () => void,
+  now = new Date(),
+): T[] {
+  const kept: T[] = [];
+  for (const item of items) {
+    if (item.pinned) {
+      kept.push(item);
+      continue;
+    }
+
+    const inactiveDays = daysBetween(new Date(item.lastSeenAt), now);
+
+    if (item.status === "candidate" && inactiveDays > store.settings.candidateTtlDays) {
+      onDeleted();
+      continue;
+    }
+
+    if (item.status === "archived" && inactiveDays > store.settings.inactiveTtlDays * 2) {
+      onDeleted();
+      continue;
+    }
+
+    if (item.status === "active" && inactiveDays > store.settings.inactiveTtlDays * 3) {
+      onDeleted();
+      continue;
+    }
+
+    if (item.status === "active" && inactiveDays > store.settings.inactiveTtlDays) {
+      item.status = "archived";
+      item.confidence = Math.min(item.confidence, 0.25);
+      onArchived();
+    }
+
+    kept.push(item);
+  }
+
+  return kept;
 }

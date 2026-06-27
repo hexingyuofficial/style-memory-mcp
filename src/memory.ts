@@ -1,13 +1,17 @@
 import { cleanupStore } from "./cleanup.js";
-import { evaluateHabitForContext } from "./context.js";
+import { evaluateHabitForContext, evaluatePreferenceForContext } from "./context.js";
 import { extractHabits } from "./extract.js";
 import { isSensitive, sanitizeExample } from "./sensitivity.js";
-import { clamp, loadStore, makeId, MAX_SEEN_CONTEXTS, saveStore } from "./store.js";
+import { clamp, loadStore, makeId, makeProfileId, MAX_SEEN_CONTEXTS, saveStore } from "./store.js";
 import type {
   ExtractedHabit,
   HabitKind,
+  InteractionPreference,
+  InteractionPreferenceCategory,
   HintInput,
   ObserveResult,
+  ProfileDistillResult,
+  ProfileHintInput,
   ReviewResult,
   ReviewSuggestion,
   StyleHabit,
@@ -25,6 +29,19 @@ const VALID_KINDS: ReadonlySet<HabitKind> = new Set<HabitKind>([
   "structure",
   "idiolect",
 ]);
+
+const VALID_PROFILE_CATEGORIES: ReadonlySet<InteractionPreferenceCategory> =
+  new Set<InteractionPreferenceCategory>([
+    "response_structure",
+    "collaboration",
+    "explanation",
+    "decision_making",
+    "workflow",
+    "tone_boundary",
+  ]);
+
+const BLOCKED_PROFILE_LABEL_RE =
+  /\b(introvert|extrovert|neurotic|narciss|adhd|autis|depress|anxious|bipolar)\b|人格|性格|内向|外向|焦虑|抑郁|自恋|心理|精神/i;
 
 /** Base delta applied to hint-sourced habits before LLM confidence scales it. */
 const HINT_BASE_DELTA = 0.14;
@@ -47,6 +64,7 @@ export async function observeUserMessage(
   text: string,
   context?: string,
   hints?: HintInput[],
+  profileHints?: ProfileHintInput[],
 ): Promise<ObserveResult> {
   const store = await loadStore();
   const cleanup = cleanupStore(store);
@@ -55,7 +73,7 @@ export async function observeUserMessage(
   if (!store.settings.allowLearning) {
     ignored.push("learning_disabled");
     await saveStore(store);
-    return { learned: [], updated: [], ignored, cleanup };
+    return { learned: [], updated: [], profileLearned: [], profileUpdated: [], ignored, cleanup };
   }
 
   // Sensitive messages: skip rule-based extraction AND drop hints entirely
@@ -63,7 +81,7 @@ export async function observeUserMessage(
   if (isSensitive(text, context)) {
     ignored.push("sensitive_context");
     await saveStore(store);
-    return { learned: [], updated: [], ignored, cleanup };
+    return { learned: [], updated: [], profileLearned: [], profileUpdated: [], ignored, cleanup };
   }
 
   const ruleExtracted = extractHabits(text).map(
@@ -71,9 +89,16 @@ export async function observeUserMessage(
   );
 
   const hintExtracted = normalizeHints(hints, ignored, store.settings.maxExampleLen);
+  const profileExtracted = normalizeProfileHints(
+    profileHints,
+    ignored,
+    store.settings.maxExampleLen,
+  );
 
   const learned: StyleHabit[] = [];
   const updated: StyleHabit[] = [];
+  const profileLearned: InteractionPreference[] = [];
+  const profileUpdated: InteractionPreference[] = [];
   const now = new Date().toISOString();
 
   for (const item of [...ruleExtracted, ...hintExtracted]) {
@@ -81,8 +106,19 @@ export async function observeUserMessage(
     (isNew ? learned : updated).push(habit);
   }
 
+  for (const item of profileExtracted) {
+    const { preference, isNew } = upsertPreference(
+      store.profile.preferences,
+      item,
+      now,
+      store.settings,
+      context,
+    );
+    (isNew ? profileLearned : profileUpdated).push(preference);
+  }
+
   await saveStore(store);
-  return { learned, updated, ignored, cleanup };
+  return { learned, updated, profileLearned, profileUpdated, ignored, cleanup };
 }
 
 /**
@@ -101,7 +137,7 @@ export async function distillRecentStyle(
   if (!store.settings.allowLearning) {
     ignored.push("learning_disabled");
     await saveStore(store);
-    return { learned: [], updated: [], ignored, cleanup };
+    return { learned: [], updated: [], profileLearned: [], profileUpdated: [], ignored, cleanup };
   }
 
   const distilled = normalizeHints(habits, ignored, store.settings.maxExampleLen).map(
@@ -118,6 +154,44 @@ export async function distillRecentStyle(
     // chat. We still record it so cross-context counters move.
     const { habit, isNew } = upsertHabit(store.habits, item, now, store.settings, "distilled");
     (isNew ? learned : updated).push(habit);
+  }
+
+  await saveStore(store);
+  return { learned, updated, profileLearned: [], profileUpdated: [], ignored, cleanup };
+}
+
+export async function distillInteractionProfile(
+  preferences: ProfileHintInput[],
+): Promise<ProfileDistillResult> {
+  const store = await loadStore();
+  const cleanup = cleanupStore(store);
+  const ignored: string[] = [];
+
+  if (!store.settings.allowLearning) {
+    ignored.push("learning_disabled");
+    await saveStore(store);
+    return { learned: [], updated: [], ignored, cleanup };
+  }
+
+  const distilled = normalizeProfileHints(
+    preferences,
+    ignored,
+    store.settings.maxExampleLen,
+  ).map((item) => ({ ...item, source: "distill" as const }));
+
+  const learned: InteractionPreference[] = [];
+  const updated: InteractionPreference[] = [];
+  const now = new Date().toISOString();
+
+  for (const item of distilled) {
+    const { preference, isNew } = upsertPreference(
+      store.profile.preferences,
+      item,
+      now,
+      store.settings,
+      "distilled",
+    );
+    (isNew ? learned : updated).push(preference);
   }
 
   await saveStore(store);
@@ -140,13 +214,28 @@ export async function getStyleBrief(context?: string): Promise<string> {
         b.habit.seenCount - a.habit.seenCount,
     )
     .slice(0, store.settings.maxBriefItems);
+  const preferences = store.profile.preferences
+    .filter((preference) => preference.status === "active" && preference.confidence >= 0.3)
+    .map((preference) => ({
+      preference,
+      decision: evaluatePreferenceForContext(preference, context),
+    }))
+    .filter((item) => item.decision.include)
+    .sort(
+      (a, b) =>
+        b.decision.score - a.decision.score ||
+        b.preference.confidence - a.preference.confidence ||
+        b.preference.seenCount - a.preference.seenCount,
+    )
+    .slice(0, Math.min(4, store.settings.maxBriefItems));
 
-  if (habits.length === 0) {
+  if (habits.length === 0 && preferences.length === 0) {
     return "No stable style habits yet. Keep the reply natural and do not imitate aggressively.";
   }
 
   const now = new Date().toISOString();
   for (const { habit } of habits) habit.lastReturnedAt = now;
+  for (const { preference } of preferences) preference.lastReturnedAt = now;
   await saveStore(store);
 
   return [
@@ -156,6 +245,19 @@ export async function getStyleBrief(context?: string): Promise<string> {
     "- Echo the user's general rhythm and collaboration preference more than exact words.",
     "- Prefer clarity over flavor in technical, formal, upset, or high-stakes contexts.",
     "- Do not repeat a habit unless it fits naturally.",
+    ...(preferences.length
+      ? [
+          "Interaction profile:",
+          ...preferences.flatMap(({ preference }) => {
+            const use = preference.useWhen.length ? ` Use: ${preference.useWhen.join(", ")}.` : "";
+            const avoid = preference.avoidWhen.length
+              ? ` Avoid: ${preference.avoidWhen.join(", ")}.`
+              : "";
+            const line = `- ${preference.category}: ${preference.text} (confidence ${preference.confidence.toFixed(2)}).${use}${avoid}`;
+            return preference.example ? [line, `  e.g. "${preference.example}"`] : [line];
+          }),
+        ]
+      : []),
     "Relevant habits:",
     ...habits.flatMap(({ habit }) => {
       const locale = habit.locale ? `, ${habit.locale}` : "";
@@ -170,6 +272,13 @@ export async function getStyleBrief(context?: string): Promise<string> {
 export async function listStyleHabits(): Promise<StyleHabit[]> {
   const store = await loadStore();
   return [...store.habits].sort((a, b) => b.confidence - a.confidence || b.seenCount - a.seenCount);
+}
+
+export async function listInteractionProfile(): Promise<InteractionPreference[]> {
+  const store = await loadStore();
+  return [...store.profile.preferences].sort(
+    (a, b) => b.confidence - a.confidence || b.seenCount - a.seenCount,
+  );
 }
 
 export async function reviewStyleHabits(limit = 12): Promise<ReviewResult> {
@@ -295,6 +404,76 @@ function normalizeHints(
   return out;
 }
 
+interface NormalizedProfileHint {
+  category: InteractionPreferenceCategory;
+  text: string;
+  confidenceDelta: number;
+  useWhen: string[];
+  avoidWhen: string[];
+  notes?: string;
+  example?: string;
+  source?: "hint" | "distill";
+}
+
+function normalizeProfileHints(
+  hints: ProfileHintInput[] | undefined,
+  ignored: string[],
+  maxExampleLen: number,
+): NormalizedProfileHint[] {
+  if (!hints || hints.length === 0) return [];
+
+  const out: NormalizedProfileHint[] = [];
+  for (const hint of hints) {
+    if (!hint || typeof hint !== "object") {
+      ignored.push("profile_hint_malformed");
+      continue;
+    }
+
+    if (!VALID_PROFILE_CATEGORIES.has(hint.category)) {
+      ignored.push(`profile_hint_unknown_category:${hint.category}`);
+      continue;
+    }
+
+    const text = typeof hint.text === "string" ? hint.text.trim() : "";
+    if (!text || text.length > 120) {
+      ignored.push("profile_hint_bad_text");
+      continue;
+    }
+    if (isSensitive(text) || BLOCKED_PROFILE_LABEL_RE.test(text)) {
+      ignored.push("profile_hint_sensitive_or_label");
+      continue;
+    }
+
+    const conf =
+      typeof hint.confidence === "number" && hint.confidence >= 0 && hint.confidence <= 1
+        ? hint.confidence
+        : 0.5;
+    const scaled = HINT_BASE_DELTA * (0.5 + 1.5 * conf);
+    const confidenceDelta = Math.min(HINT_DELTA_MAX, Math.max(HINT_DELTA_MIN, scaled));
+    const notes =
+      typeof hint.notes === "string" &&
+      !isSensitive(hint.notes) &&
+      !BLOCKED_PROFILE_LABEL_RE.test(hint.notes)
+        ? hint.notes.slice(0, 160)
+        : undefined;
+
+    out.push({
+      category: hint.category,
+      text,
+      confidenceDelta,
+      useWhen: Array.isArray(hint.useWhen) ? cleanLabelList(hint.useWhen, 8) : ["general"],
+      avoidWhen: Array.isArray(hint.avoidWhen)
+        ? cleanLabelList(hint.avoidWhen, 8)
+        : ["high_stakes_advice"],
+      notes,
+      example: sanitizeExample(hint.example, maxExampleLen),
+      source: "hint",
+    });
+  }
+
+  return out;
+}
+
 function defaultUseWhen(_kind: HabitKind): string[] {
   // Safe defaults that mirror catchphrase semantics — anything more
   // specific should come from the hint itself.
@@ -376,6 +555,89 @@ function baseReviewSuggestion(
     avoidWhen: habit.avoidWhen,
     example: habit.example,
   };
+}
+
+function upsertPreference(
+  preferences: InteractionPreference[],
+  item: NormalizedProfileHint,
+  now: string,
+  settings: StyleSettings,
+  context?: string,
+): { preference: InteractionPreference; isNew: boolean } {
+  const id = makeProfileId(item.category, item.text);
+  let preference = preferences.find(
+    (candidate) =>
+      candidate.id === id ||
+      (candidate.category === item.category && candidate.text === item.text),
+  );
+
+  const initialSeenContexts = context ? [context] : undefined;
+
+  if (!preference) {
+    const isDistill = item.source === "distill";
+    preference = {
+      id,
+      category: item.category,
+      text: item.text,
+      confidence: clamp(item.confidenceDelta),
+      seenCount: isDistill ? settings.minPromoteCount : 1,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      status: "candidate",
+      pinned: false,
+      useWhen: item.useWhen,
+      avoidWhen: item.avoidWhen,
+      notes: item.notes,
+      example: item.example,
+      seenContexts: initialSeenContexts,
+      source: item.source ?? "hint",
+    };
+    preferences.push(preference);
+    maybePromotePreference(preference, item, settings);
+    return { preference, isNew: true };
+  }
+
+  preference.seenCount += 1;
+  preference.lastSeenAt = now;
+  preference.confidence = clamp(preference.confidence + item.confidenceDelta);
+  preference.useWhen = mergeList(preference.useWhen, item.useWhen);
+  preference.avoidWhen = mergeList(preference.avoidWhen, item.avoidWhen);
+  preference.notes = preference.notes || item.notes;
+  if (!preference.example && item.example) preference.example = item.example;
+
+  if (context) {
+    const existing = preference.seenContexts ?? [];
+    if (!existing.includes(context)) {
+      preference.seenContexts = [...existing, context].slice(-MAX_SEEN_CONTEXTS);
+    }
+  }
+
+  if (preference.status === "archived") preference.status = "candidate";
+  maybePromotePreference(preference, item, settings);
+
+  return { preference, isNew: false };
+}
+
+function maybePromotePreference(
+  preference: InteractionPreference,
+  item: NormalizedProfileHint,
+  settings: StyleSettings,
+) {
+  if (preference.status !== "candidate") return;
+  if (preference.seenCount < settings.minPromoteCount) return;
+
+  const contextsSeen = preference.seenContexts?.length ?? 0;
+  const isHighConfidenceHint =
+    item.source === "hint" && item.confidenceDelta >= HINT_HIGH_CONVICTION_DELTA;
+  const crossContextOk =
+    contextsSeen >= 2 ||
+    isHighConfidenceHint ||
+    item.source === "distill" ||
+    contextsSeen === 0;
+  if (!crossContextOk) return;
+
+  preference.status = "active";
+  preference.confidence = Math.max(preference.confidence, 0.35);
 }
 
 function upsertHabit(

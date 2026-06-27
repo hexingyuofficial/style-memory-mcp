@@ -6,9 +6,11 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
 import {
+  distillInteractionProfile,
   distillRecentStyle,
   observeUserMessage,
   getStyleBrief,
+  listInteractionProfile,
   listStyleHabits,
   forgetStyleHabit,
   pinStyleHabit,
@@ -42,6 +44,7 @@ after(async () => {
 beforeEach(async () => {
   const store = await loadStore();
   store.habits = [];
+  store.profile.preferences = [];
   store.settings.allowLearning = true;
   await saveStore(store);
 });
@@ -245,6 +248,30 @@ describe("getStyleBrief", () => {
 
     const brief = await getStyleBrief("technical_chat");
     assert.ok(brief.indexOf("zh-en-code-mix") < brief.indexOf("generic-friendly"));
+  });
+
+  it("includes active interaction profile preferences", async () => {
+    const store = await loadStore();
+    store.profile.preferences = [
+      {
+        id: "profile-direct-plan",
+        category: "response_structure" as const,
+        text: "prefers direct assessment before implementation",
+        confidence: 0.8,
+        seenCount: 5,
+        firstSeenAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        status: "active" as const,
+        pinned: false,
+        useWhen: ["technical_chat"],
+        avoidWhen: [],
+      },
+    ];
+    await saveStore(store);
+
+    const brief = await getStyleBrief("technical_chat");
+    assert.ok(brief.includes("Interaction profile:"));
+    assert.ok(brief.includes("prefers direct assessment before implementation"));
   });
 });
 
@@ -651,6 +678,66 @@ describe("observeUserMessage with hints", () => {
     assert.deepEqual(habit!.useWhen, ["casual_chat"]);
     assert.deepEqual(habit!.avoidWhen, ["formal_writing"]);
   });
+
+  it("learns concrete interaction profile hints", async () => {
+    const result = await observeUserMessage(
+      "先判断值不值得做，再给我步骤",
+      "technical_chat",
+      undefined,
+      [
+        {
+          category: "response_structure",
+          text: "prefers value judgment before step-by-step implementation",
+          example: "先判断值不值得做，再给我步骤",
+          useWhen: ["technical_chat", "planning"],
+          confidence: 0.7,
+        },
+      ],
+    );
+
+    assert.equal(result.profileLearned.length, 1);
+    assert.equal(
+      result.profileLearned[0].text,
+      "prefers value judgment before step-by-step implementation",
+    );
+    assert.equal(result.profileLearned[0].status, "candidate");
+  });
+
+  it("rejects personality or psychology labels in profile hints", async () => {
+    const result = await observeUserMessage(
+      "hello",
+      "casual_chat",
+      undefined,
+      [
+        {
+          category: "collaboration",
+          text: "user is anxious and introverted",
+          confidence: 0.9,
+        },
+      ],
+    );
+
+    assert.ok(result.ignored.includes("profile_hint_sensitive_or_label"));
+    assert.equal(result.profileLearned.length, 0);
+  });
+
+  it("rejects Chinese personality labels in profile hints", async () => {
+    const result = await observeUserMessage(
+      "hello",
+      "casual_chat",
+      undefined,
+      [
+        {
+          category: "collaboration",
+          text: "用户性格内向",
+          confidence: 0.9,
+        },
+      ],
+    );
+
+    assert.ok(result.ignored.includes("profile_hint_sensitive_or_label"));
+    assert.equal(result.profileLearned.length, 0);
+  });
 });
 
 describe("getStyleBrief renders examples", () => {
@@ -733,6 +820,64 @@ describe("distillRecentStyle", () => {
   });
 });
 
+describe("interaction profile", () => {
+  it("distills interaction preferences as active immediately", async () => {
+    process.env.STYLE_MEMORY_MIN_PROMOTE_COUNT = "3";
+    const result = await distillInteractionProfile([
+      {
+        category: "workflow",
+        text: "prefers plan, implement, then verify",
+        example: "先做计划，再实现，最后跑测试",
+        useWhen: ["technical_chat"],
+        confidence: 0.8,
+      },
+    ]);
+
+    assert.equal(result.learned.length, 1);
+    assert.equal(result.learned[0].status, "active");
+    assert.equal(result.learned[0].source, "distill");
+    delete process.env.STYLE_MEMORY_MIN_PROMOTE_COUNT;
+  });
+
+  it("lists interaction profile preferences sorted by confidence", async () => {
+    const now = new Date().toISOString();
+    const store = await loadStore();
+    store.profile.preferences = [
+      {
+        id: "low",
+        category: "collaboration" as const,
+        text: "low",
+        confidence: 0.3,
+        seenCount: 2,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        status: "candidate" as const,
+        pinned: false,
+        useWhen: [],
+        avoidWhen: [],
+      },
+      {
+        id: "high",
+        category: "workflow" as const,
+        text: "high",
+        confidence: 0.8,
+        seenCount: 2,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        status: "active" as const,
+        pinned: false,
+        useWhen: [],
+        avoidWhen: [],
+      },
+    ];
+    await saveStore(store);
+
+    const profile = await listInteractionProfile();
+    assert.equal(profile[0].text, "high");
+    assert.equal(profile[1].text, "low");
+  });
+});
+
 describe("legacy store compatibility", () => {
   it("loads a v0.1-shaped habit (no example, no seenContexts) and updates it", async () => {
     const store = await loadStore();
@@ -762,5 +907,20 @@ describe("legacy store compatibility", () => {
     assert.equal(legacy!.example, undefined);
     // seenContexts is allowed to be undefined or an empty-array equivalent.
     assert.ok(legacy!.seenContexts === undefined || legacy!.seenContexts.length === 0);
+  });
+
+  it("loads a store without profile and adds an empty profile", async () => {
+    await writeFile(
+      testFile,
+      JSON.stringify({
+        version: 1,
+        settings: (await loadStore()).settings,
+        habits: [],
+      }),
+      "utf8",
+    );
+
+    const store = await loadStore();
+    assert.deepEqual(store.profile.preferences, []);
   });
 });

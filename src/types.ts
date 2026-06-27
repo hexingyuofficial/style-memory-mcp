@@ -15,6 +15,14 @@ export type HabitStatus = "candidate" | "active" | "archived";
 /** Where a habit observation came from. Useful for debugging; no behavioral split. */
 export type HabitSource = "rule" | "hint" | "distill";
 
+export type InteractionPreferenceCategory =
+  | "response_structure"
+  | "collaboration"
+  | "explanation"
+  | "decision_making"
+  | "workflow"
+  | "tone_boundary";
+
 export interface StyleHabit {
   id: string;
   kind: HabitKind;
@@ -62,7 +70,31 @@ export interface StyleStore {
   version: 1;
   settings: StyleSettings;
   habits: StyleHabit[];
+  profile: InteractionProfile;
   lastCleanupAt?: string;
+}
+
+export interface InteractionProfile {
+  preferences: InteractionPreference[];
+}
+
+export interface InteractionPreference {
+  id: string;
+  category: InteractionPreferenceCategory;
+  text: string;
+  confidence: number;
+  seenCount: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  lastReturnedAt?: string;
+  status: HabitStatus;
+  pinned: boolean;
+  useWhen: string[];
+  avoidWhen: string[];
+  notes?: string;
+  example?: string;
+  seenContexts?: string[];
+  source?: HabitSource;
 }
 
 export interface ExtractedHabit {
@@ -97,9 +129,26 @@ export interface HintInput {
   confidence?: number;
 }
 
+/**
+ * Host LLM's observation of how the user prefers to collaborate.
+ * This is NOT a personality label. Keep it concrete and behavioral:
+ * e.g. "prefers direct assessment before implementation".
+ */
+export interface ProfileHintInput {
+  category: InteractionPreferenceCategory;
+  text: string;
+  example?: string;
+  useWhen?: string[];
+  avoidWhen?: string[];
+  notes?: string;
+  confidence?: number;
+}
+
 export interface ObserveResult {
   learned: StyleHabit[];
   updated: StyleHabit[];
+  profileLearned: InteractionPreference[];
+  profileUpdated: InteractionPreference[];
   ignored: string[];
   cleanup: {
     archived: number;
@@ -135,4 +184,14 @@ export interface ReviewResult {
     allowLearning: boolean;
   };
   suggestions: ReviewSuggestion[];
+}
+
+export interface ProfileDistillResult {
+  learned: InteractionPreference[];
+  updated: InteractionPreference[];
+  ignored: string[];
+  cleanup: {
+    archived: number;
+    deleted: number;
+  };
 }

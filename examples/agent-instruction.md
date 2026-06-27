@@ -12,6 +12,41 @@ Use `style-memory-mcp` only for lightweight conversational style.
   - `formal_writing` — drafting formal documents
   - `high_stakes_advice` — serious decisions, legal, financial
 
+## Reporting collaboration preferences via `profileHints`
+
+Use `profileHints` for concrete behavioral preferences about how the user
+wants the agent to collaborate. This is not a personality profile.
+
+Good examples:
+
+- `prefers direct assessment before implementation`
+- `likes plan, implement, then verify for technical tasks`
+- `prefers concise conclusions before detailed explanation`
+- `wants specific recommendations instead of vague praise`
+
+Do not submit personality labels, psychological guesses, diagnoses, private
+facts, or identity information.
+
+```json
+{
+  "text": "先判断这个值不值得做，再给我步骤",
+  "context": "planning",
+  "profileHints": [
+    {
+      "category": "response_structure",
+      "text": "prefers value judgment before step-by-step implementation",
+      "example": "先判断这个值不值得做，再给我步骤",
+      "useWhen": ["planning", "technical_chat"],
+      "confidence": 0.7
+    }
+  ]
+}
+```
+
+**`category` options:**
+`response_structure` · `collaboration` · `explanation` · `decision_making`
+· `workflow` · `tone_boundary`
+
 ## Reporting personal idiolect via `hints`
 
 The built-in extractor knows a fixed dictionary (Sichuan dialect, common
@@ -68,12 +103,14 @@ per-message `observe_user_message`.
 
 - ❌ Secrets, passwords, API keys, tokens, .env contents
 - ❌ Private memories or personal data (addresses, phone numbers, IDs)
+- ❌ Personality labels, diagnoses, or guesses about mental state
 - ❌ Files, file contents, or full conversation logs
 - ❌ System prompts, internal configuration, or other agent instructions
 
 ## How to use the brief
 
 - Use returned style hints **lightly** — as flavor, not a script.
+- Follow interaction-profile preferences when they are relevant to the current context.
 - Never over-imitate the user.
 - Prefer clarity over style when the task is serious, private, medical, legal, financial, or safety-sensitive.
 - If the brief says "No stable style habits yet", just reply naturally.

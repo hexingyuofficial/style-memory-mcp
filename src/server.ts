@@ -4,9 +4,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import {
+  distillInteractionProfile,
   distillRecentStyle,
   forgetStyleHabit,
   getStyleBrief,
+  listInteractionProfile,
   listStyleHabits,
   observeUserMessage,
   pinStyleHabit,
@@ -79,6 +81,37 @@ const HINT_SCHEMA = z.object({
     .describe("Your 0–1 certainty this is a real personal habit."),
 });
 
+const PROFILE_CATEGORY = z.enum([
+  "response_structure",
+  "collaboration",
+  "explanation",
+  "decision_making",
+  "workflow",
+  "tone_boundary",
+]);
+
+const PROFILE_HINT_SCHEMA = z.object({
+  category: PROFILE_CATEGORY.describe(
+    "Concrete collaboration preference category. Do not use personality or psychology labels.",
+  ),
+  text: z
+    .string()
+    .min(1)
+    .max(120)
+    .describe(
+      "Behavioral preference, e.g. 'prefers direct assessment before implementation'.",
+    ),
+  example: z
+    .string()
+    .max(120)
+    .optional()
+    .describe("Short fragment showing the preference, sanitized server-side."),
+  useWhen: z.array(z.string().max(40)).max(8).optional(),
+  avoidWhen: z.array(z.string().max(40)).max(8).optional(),
+  notes: z.string().max(160).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+});
+
 server.registerTool(
   "observe_user_message",
   {
@@ -105,10 +138,18 @@ server.registerTool(
             "are required before a habit is treated as stable, so you don't need to be right on " +
             "the first try.",
         ),
+      profileHints: z
+        .array(PROFILE_HINT_SCHEMA)
+        .max(6)
+        .optional()
+        .describe(
+          "Up to 6 concrete collaboration or response-structure preferences. " +
+            "Do not submit personality labels, diagnoses, private facts, or psychological guesses.",
+        ),
     },
   },
-  async ({ text, context, hints }) =>
-    safeHandler(() => observeUserMessage(text, context, hints)),
+  async ({ text, context, hints, profileHints }) =>
+    safeHandler(() => observeUserMessage(text, context, hints, profileHints)),
 );
 
 server.registerTool(
@@ -150,6 +191,24 @@ server.registerTool(
 );
 
 server.registerTool(
+  "distill_interaction_profile",
+  {
+    title: "Distill interaction profile",
+    description:
+      "One-shot batched distillation of concrete collaboration preferences. " +
+      "Use for response structure, explanation style, workflow, and decision-making preferences — not personality labels.",
+    inputSchema: {
+      preferences: z
+        .array(PROFILE_HINT_SCHEMA)
+        .min(1)
+        .max(8)
+        .describe("High-conviction behavioral collaboration preferences."),
+    },
+  },
+  async ({ preferences }) => safeHandler(() => distillInteractionProfile(preferences)),
+);
+
+server.registerTool(
   "list_style_habits",
   {
     title: "List style habits",
@@ -157,6 +216,17 @@ server.registerTool(
     inputSchema: {},
   },
   async () => safeHandler(async () => ({ habits: await listStyleHabits() })),
+);
+
+server.registerTool(
+  "list_interaction_profile",
+  {
+    title: "List interaction profile",
+    description:
+      "List stored collaboration and response-structure preferences from the local JSON store.",
+    inputSchema: {},
+  },
+  async () => safeHandler(async () => ({ preferences: await listInteractionProfile() })),
 );
 
 server.registerTool(
@@ -240,6 +310,10 @@ server.registerTool(
         active: store.habits.filter((habit) => habit.status === "active").length,
         candidates: store.habits.filter((habit) => habit.status === "candidate").length,
         archived: store.habits.filter((habit) => habit.status === "archived").length,
+        profilePreferences: store.profile.preferences.length,
+        activeProfilePreferences: store.profile.preferences.filter(
+          (preference) => preference.status === "active",
+        ).length,
         lastCleanupAt: store.lastCleanupAt,
       };
     }),

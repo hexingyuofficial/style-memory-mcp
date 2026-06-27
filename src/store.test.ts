@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { defaultSettings, makeId } from "./store.js";
+import { defaultSettings, makeId, makeProfileId } from "./store.js";
 
 let savedMinPromoteCount: string | undefined;
 let savedMaxBriefItems: string | undefined;
@@ -30,6 +30,21 @@ describe("makeId", () => {
     assert.notEqual(thumbsUp, party);
     assert.ok(thumbsUp.startsWith("any-emoji-h-"));
     assert.ok(party.startsWith("any-emoji-h-"));
+  });
+});
+
+describe("makeProfileId", () => {
+  it("creates stable profile ids with readable prefixes", () => {
+    const id = makeProfileId(
+      "response_structure",
+      "prefers direct assessment before implementation",
+    );
+    assert.ok(id.startsWith("profile-response-structure-prefers-direct-assessment"));
+    assert.match(id, /-h-[a-z0-9]+$/);
+    assert.equal(
+      id,
+      makeProfileId("response_structure", "prefers direct assessment before implementation"),
+    );
   });
 });
 

@@ -1,4 +1,4 @@
-import type { StyleHabit } from "./types.js";
+import type { InteractionPreference, StyleHabit } from "./types.js";
 
 const HIGH_STAKES_CONTEXTS = new Set([
   "high_stakes_advice",
@@ -52,6 +52,24 @@ export function evaluateHabitForContext(habit: StyleHabit, context?: string): Co
   let score = habit.confidence;
   if (habit.useWhen.some((item) => labels.has(item))) score += 0.2;
   if (habit.seenContexts?.some((item) => labels.has(item))) score += 0.08;
+
+  return { include: true, score };
+}
+
+export function evaluatePreferenceForContext(
+  preference: InteractionPreference,
+  context?: string,
+): ContextDecision {
+  if (!context) return { include: true, score: preference.confidence };
+
+  const labels = expandContext(context);
+  if (preference.avoidWhen.some((item) => labels.has(item))) {
+    return { include: false, score: 0, reason: "avoidWhen" };
+  }
+
+  let score = preference.confidence + 0.05;
+  if (preference.useWhen.some((item) => labels.has(item))) score += 0.2;
+  if (preference.seenContexts?.some((item) => labels.has(item))) score += 0.08;
 
   return { include: true, score };
 }

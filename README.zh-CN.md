@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-一个轻量级的本地 MCP 服务器，学习用户的对话风格、口头禅、方言标记、表情习惯和语气偏好，**不存储私人记忆**。
+一个轻量级的本地 MCP 服务器，学习用户的对话风格、口头禅、方言标记、表情习惯、语气偏好，以及具体的协作偏好，**不存储私人记忆**。
 
 它的目的是记住一个人说话的"味道"，而不是他生活中的私密事实。
 
@@ -34,6 +34,7 @@
 - 自动清理过期习惯（候选 → 归档 → 删除）
 - 支持中文、英文、emoji、颜文字、方言标记 — 以及给 host LLM 兜底用的 free-form `idiolect` 类型
 - 返回面向 agent 的可执行风格简报：先讲如何使用，再给当前场景相关习惯
+- 支持 `interaction profile`：记录"用户喜欢 AI 如何协作"，而不是给用户贴性格标签
 - 兼容任何支持 MCP 工具的 agent
 - 可固定习惯以防止自动清理
 - 随时可通过 `set_learning_enabled` 暂停学习
@@ -113,7 +114,7 @@ npm run dev
 
 Agent 应在用户消息后调用此工具，但**不要**传入密码、私人记忆或完整对话日志。
 
-可以选择性附带 `hints` 数组 — 见下方 [LLM 协同学习](#llm-协同学习)。
+可以选择性附带 `hints` 数组和 `profileHints` 数组 — 见下方 [LLM 协同学习](#llm-协同学习) 和 [Interaction profile](#interaction-profile协作偏好层)。
 
 ### `get_style_brief`
 
@@ -125,9 +126,17 @@ Agent 应在对话开始前或写友好回复前调用此工具。
 
 批量、用户背书的蒸馏入口。Host LLM 一次性提交 3–8 条从最近消息蒸馏出的高置信度观察，每条直接成为 `active`。适合冷启动时给一份"起手种子"，或用户明确说"好好学一下我说话的样子"时调用。
 
+### `distill_interaction_profile`
+
+批量写入具体协作偏好，例如"喜欢先判断值不值得做，再给步骤"、"技术任务喜欢计划 → 实现 → 验证"。不要提交性格、心理状态、人格类型或诊断标签。
+
 ### `list_style_habits`
 
 列出所有候选、活跃和已归档的习惯。
+
+### `list_interaction_profile`
+
+列出已存储的协作偏好。
 
 ### `review_style_habits`
 
@@ -166,6 +175,42 @@ Agent 应在对话开始前或写友好回复前调用此工具。
 ```
 
 完整范本见 `examples/agent-instruction.md`。
+
+## Interaction profile：协作偏好层
+
+`style-memory-mcp` 不做性格画像。它可以学习的是更具体、更安全、更可执行的协作偏好：
+
+- "用户喜欢先结论后细节"
+- "用户做技术任务时喜欢计划 → 实现 → 验证"
+- "用户喜欢先判断值不值得做，再进入步骤"
+- "用户不喜欢空泛夸奖，希望建议具体"
+
+不要写入这类内容：
+
+- "用户很焦虑"
+- "用户是内向人格"
+- "用户有某种心理问题"
+- "用户的真实身份、住址、工作、私人事实"
+
+Host agent 可以在 `observe_user_message` 里附带 `profileHints`：
+
+```jsonc
+{
+  "text": "先判断这个值不值得做，再给我步骤",
+  "context": "planning",
+  "profileHints": [
+    {
+      "category": "response_structure",
+      "text": "prefers value judgment before step-by-step implementation",
+      "example": "先判断这个值不值得做，再给我步骤",
+      "useWhen": ["planning", "technical_chat"],
+      "confidence": 0.7
+    }
+  ]
+}
+```
+
+也可以用 `distill_interaction_profile` 一次性写入 1–8 条高置信度协作偏好。它们会和口癖/语气 habit 一起进入 `get_style_brief`，但 brief 仍然保持短小，只返回当前场景相关内容。
 
 ## 只读复用与重启
 

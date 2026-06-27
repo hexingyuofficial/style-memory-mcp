@@ -1,7 +1,13 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import type { StyleHabit, StyleSettings, StyleStore } from "./types.js";
+import type {
+  InteractionPreference,
+  InteractionPreferenceCategory,
+  StyleHabit,
+  StyleSettings,
+  StyleStore,
+} from "./types.js";
 
 const DEFAULT_DIR = join(homedir(), ".style-memory-mcp");
 const DEFAULT_FILE = join(DEFAULT_DIR, "style-memory.json");
@@ -42,6 +48,7 @@ export async function loadStore(dataPath = resolveDataPath()): Promise<StyleStor
         version: 1,
         settings: defaultSettings(dataPath),
         habits: [],
+        profile: { preferences: [] },
       };
     }
 
@@ -53,6 +60,7 @@ export async function loadStore(dataPath = resolveDataPath()): Promise<StyleStor
         version: 1,
         settings: defaultSettings(dataPath),
         habits: [],
+        profile: { preferences: [] },
       };
     }
 
@@ -65,6 +73,7 @@ export async function loadStore(dataPath = resolveDataPath()): Promise<StyleStor
         version: 1,
         settings: defaultSettings(dataPath),
         habits: [],
+        profile: { preferences: [] },
       };
     }
 
@@ -107,6 +116,7 @@ export function normalizeStore(store: StyleStore, dataPath: string): StyleStore 
     version: 1,
     settings,
     habits: Array.isArray(store.habits) ? store.habits.map(normalizeHabit) : [],
+    profile: normalizeProfile((store as Partial<StyleStore>).profile),
     lastCleanupAt: store.lastCleanupAt,
   };
 }
@@ -149,6 +159,47 @@ export function normalizeHabit(habit: StyleHabit): StyleHabit {
   };
 }
 
+export function normalizeProfile(profile: Partial<StyleStore["profile"]> | undefined): StyleStore["profile"] {
+  const preferences = Array.isArray(profile?.preferences)
+    ? profile.preferences.map(normalizeInteractionPreference).filter(Boolean)
+    : [];
+  return { preferences };
+}
+
+export function normalizeInteractionPreference(
+  preference: InteractionPreference,
+): InteractionPreference {
+  const maxExampleLen = readPositiveIntEnv("STYLE_MEMORY_MAX_EXAMPLE_LEN", 60, 1, 240);
+  const rawExample = typeof preference.example === "string" ? preference.example : undefined;
+  const example =
+    rawExample && rawExample.length > 0
+      ? rawExample.slice(0, maxExampleLen)
+      : undefined;
+  const rawContexts = Array.isArray(preference.seenContexts) ? preference.seenContexts : [];
+  const seenContexts = Array.from(
+    new Set(rawContexts.filter((c): c is string => typeof c === "string" && c.length > 0)),
+  ).slice(0, MAX_SEEN_CONTEXTS);
+
+  return {
+    id: preference.id,
+    category: normalizeProfileCategory(preference.category),
+    text: preference.text,
+    confidence: clamp(preference.confidence ?? 0.1),
+    seenCount: preference.seenCount ?? 1,
+    firstSeenAt: preference.firstSeenAt || new Date().toISOString(),
+    lastSeenAt: preference.lastSeenAt || new Date().toISOString(),
+    lastReturnedAt: preference.lastReturnedAt,
+    status: preference.status || "candidate",
+    pinned: Boolean(preference.pinned),
+    useWhen: preference.useWhen || [],
+    avoidWhen: preference.avoidWhen || [],
+    notes: preference.notes,
+    example,
+    seenContexts: seenContexts.length > 0 ? seenContexts : undefined,
+    source: preference.source,
+  };
+}
+
 export function makeId(kind: string, text: string, locale?: string): string {
   const readable = `${locale || "any"}-${kind}-${text}`
     .toLowerCase()
@@ -158,6 +209,31 @@ export function makeId(kind: string, text: string, locale?: string): string {
     .slice(0, 56);
   const prefix = readable || `${locale || "any"}-${kind}`;
   return `${prefix}-h-${shortHash(`${locale || ""}\u0000${kind}\u0000${text}`)}`.slice(0, 72);
+}
+
+export function makeProfileId(category: string, text: string): string {
+  const readable = `profile-${category}-${text}`
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^\p{Letter}\p{Number}]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 56);
+  const prefix = readable || `profile-${category}`;
+  return `${prefix}-h-${shortHash(`${category}\u0000${text}`)}`.slice(0, 72);
+}
+
+function normalizeProfileCategory(category: unknown): InteractionPreferenceCategory {
+  switch (category) {
+    case "response_structure":
+    case "collaboration":
+    case "explanation":
+    case "decision_making":
+    case "workflow":
+    case "tone_boundary":
+      return category;
+    default:
+      return "collaboration";
+  }
 }
 
 function readPositiveIntEnv(

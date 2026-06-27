@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-A tiny local MCP server that learns a user's conversational style, catchphrases, dialect markers, emoji habits, and tone preferences without storing private memories.
+A tiny local MCP server that learns a user's conversational style, catchphrases, dialect markers, emoji habits, tone preferences, and concrete collaboration preferences without storing private memories.
 
 It is meant to remember the *flavor* of how someone talks, not the private facts of their life.
 
@@ -40,6 +40,8 @@ Small thing. Big vibe. (｡･ω･｡)ﾉ
   free-form `idiolect` for whatever the host LLM notices
 - Returns an actionable style brief: how to apply the style first, then the
   context-relevant habits
+- Supports an `interaction profile`: how the user prefers the agent to
+  collaborate, without personality labels
 - Works with any MCP-capable agent that calls the tools
 - Pin habits to protect them from auto-cleanup
 - Pause learning anytime with `set_learning_enabled`
@@ -120,7 +122,8 @@ Learns lightweight style signals from the latest user message.
 Agents should call this after user messages, but should **not** send secrets, private memory dumps, or full chat logs.
 
 May optionally include a `hints` array — see [LLM-assisted
-learning](#llm-assisted-learning) below.
+learning](#llm-assisted-learning) below — and a `profileHints` array for
+concrete collaboration preferences.
 
 ### `get_style_brief`
 
@@ -135,9 +138,20 @@ observations distilled from recent messages. Each habit becomes `active`
 immediately. Useful for warm-starting a fresh store, or when the user
 explicitly asks the agent to "really learn how I talk".
 
+### `distill_interaction_profile`
+
+Batched, user-endorsed seeding for concrete collaboration preferences such
+as "prefers value judgment before steps" or "likes plan → implement →
+verify for technical work". Do not submit personality labels,
+psychological states, diagnoses, or private facts.
+
 ### `list_style_habits`
 
 Lists candidates, active habits, and archived habits.
+
+### `list_interaction_profile`
+
+Lists stored collaboration and response-structure preferences.
 
 ### `review_style_habits`
 
@@ -179,6 +193,47 @@ Use returned style hints lightly. Never over-imitate the user.
 ```
 
 A longer template lives at `examples/agent-instruction.md`.
+
+## Interaction Profile
+
+`style-memory-mcp` does not build a personality profile. It can learn
+concrete, behavioral collaboration preferences that are safer and more
+useful:
+
+- "The user prefers conclusions before details."
+- "For technical work, the user likes plan → implement → verify."
+- "The user prefers value judgment before step-by-step instructions."
+- "The user dislikes vague praise and wants specific recommendations."
+
+Do not store:
+
+- "The user is anxious."
+- "The user is introverted."
+- Psychological labels, diagnoses, or personality types.
+- Real-world identity, address, job, or other private facts.
+
+Host agents can submit `profileHints` on `observe_user_message`:
+
+```jsonc
+{
+  "text": "First tell me whether this is worth doing, then give steps.",
+  "context": "planning",
+  "profileHints": [
+    {
+      "category": "response_structure",
+      "text": "prefers value judgment before step-by-step implementation",
+      "example": "First tell me whether this is worth doing, then give steps.",
+      "useWhen": ["planning", "technical_chat"],
+      "confidence": 0.7
+    }
+  ]
+}
+```
+
+For a one-shot seed, use `distill_interaction_profile` with 1–8
+high-conviction preferences. Active profile preferences appear in
+`get_style_brief` alongside style habits, but the brief stays short and
+context-filtered.
 
 ## Read-only Reuse and Restarts
 
