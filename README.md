@@ -16,12 +16,12 @@ Most agent memory tools remember facts:
 
 `style-memory-mcp` remembers voice:
 
-- "The user says `lol` or `哈哈哈` casually."
+- "The user says `lol`, `no cap`, or `ship it` casually."
 - "The user likes warm, playful replies."
-- "The user sometimes uses Sichuan markers like `锤子` or `巴适`."
-- "The user uses kaomoji like `(｡･ω･｡)`."
+- "The user uses emoji like `✨`, `😭`, or `😄`."
+- "The user leans on little idiolect markers like `tiny but mighty`."
 
-Small thing. Big vibe. (｡･ω･｡)ﾉ
+Small thing. Big vibe. ✨
 
 ## Features
 
@@ -36,7 +36,7 @@ Small thing. Big vibe. (｡･ω･｡)ﾉ
 - Promotion now also requires the habit to appear under **≥2 distinct
   context labels** (cross-context check, inspired by nuwa-skill)
 - Auto-cleans stale habits (candidate → archived → deleted)
-- Supports Chinese, English, emoji, kaomoji, and dialect markers — plus
+- Supports English slang, emoji, multilingual markers, and text emoticons — plus
   free-form `idiolect` for whatever the host LLM notices
 - Built-in dictionary covers Sichuan, Cantonese, Northeast (Dongbei),
   Shanghainese, and Min Nan / Taiwanese markers, plus current
@@ -245,7 +245,7 @@ At the start of a conversation, call get_style_brief.
 After each user message, call observe_user_message with only the latest user message.
 In long chats, silently call get_style_brief again every 12-20 user turns,
 after major context switches, before long important answers, or whenever the
-user says things like "感觉飘了" or "重新对齐一下".
+user says things like "this feels off" or "realign to my style".
 If you spot a personal habit the built-in dictionary likely wouldn't catch
 (e.g. a self-invented sentence-final particle, an unusual structural quirk),
 add it as a hints[] entry on the same observe_user_message call.
@@ -312,7 +312,7 @@ agent should refresh its alignment brief:
 - every 12–20 user turns in long chats,
 - after major topic or context switches,
 - before long or important answers,
-- when the user says "感觉飘了", "重新对齐一下", "不像我", or similar.
+- when the user says "this feels off", "realign to my style", "that does not sound like me", or similar.
 
 For a quick health check, call `get_style_memory_score`. If
 `briefRefreshRecommended` is `true`, call `get_style_brief` before the next
@@ -338,8 +338,8 @@ message.
 
 ## LLM-assisted learning
 
-The dictionary path knows only what's hard-coded (Sichuan dialect, common
-Chinese/English catchphrases, kaomoji, etc.). It will miss anything the
+The dictionary path knows only what's hard-coded (internet slang, common
+catchphrases, emoji, regional markers, etc.). It will miss anything the
 author didn't think of — including the *personal* habits that make someone
 sound like themselves.
 
@@ -352,20 +352,20 @@ network. No model registry. Zero added cost.
 ```jsonc
 // observe_user_message input
 {
-  "text": "今天天气好巴适莫",
+  "text": "tiny but mighty ✨ ship it",
   "context": "casual_chat",
   "hints": [
     {
-      "kind": "sentence_final_particle",
-      "text": "莫",
-      "example": "今天天气好巴适莫",
+      "kind": "idiolect",
+      "text": "tiny but mighty",
+      "example": "tiny but mighty ✨ ship it",
       "confidence": 0.6
     }
   ]
 }
 ```
 
-After three observations across two distinct `context` labels, `莫` is
+After three observations across two distinct `context` labels, `tiny but mighty` is
 promoted to `active` and shows up in future `get_style_brief` calls,
 example included. High-confidence hints (≥ ~0.71) skip the cross-context
 gate.
@@ -402,15 +402,15 @@ Important: a habit is refreshed only when the user says it again. Agent usage do
 
 ```json
 {
-  "id": "zh-cn-sichuan-dialect_marker-锤子",
-  "kind": "dialect_marker",
-  "text": "锤子",
-  "locale": "zh-CN-sichuan",
+  "id": "en-catchphrase-ship-it-h-0abc123",
+  "kind": "catchphrase",
+  "text": "ship it",
+  "locale": "en",
   "confidence": 0.64,
   "seenCount": 4,
   "status": "active",
   "pinned": false,
-  "useWhen": ["casual_chat", "joking", "warm_chat"],
+  "useWhen": ["casual_chat", "technical_chat", "friendly_reply"],
   "avoidWhen": ["serious_debugging", "legal", "medical", "user_upset"]
 }
 ```
@@ -467,7 +467,7 @@ This project is intentionally boring about data:
 
 Contributions are welcome! Especially:
 
-- New dialect markers (Cantonese, Shanghainese, Dongbei, etc.)
+- New slang, emoji, or regional-expression patterns
 - New catchphrase patterns for any language
 - Better heuristics for sensitivity detection
 - Performance improvements
