@@ -10,6 +10,7 @@ import {
   distillRecentStyle,
   observeUserMessage,
   getStyleBrief,
+  getStyleBriefStructured,
   getStyleMemoryScore,
   listInteractionProfile,
   listStyleHabits,
@@ -276,6 +277,117 @@ describe("getStyleBrief", () => {
     const brief = await getStyleBrief("technical_chat");
     assert.ok(brief.includes("Interaction profile:"));
     assert.ok(brief.includes("prefers direct assessment before implementation"));
+  });
+
+  it("returns structured brief data with a profile nudge when habits are mature but profile is empty", async () => {
+    const now = new Date().toISOString();
+    const store = await loadStore();
+    store.habits = Array.from({ length: 10 }, (_, index) => ({
+      id: `active-habit-${index}`,
+      kind: "catchphrase" as const,
+      text: `habit-${index}`,
+      confidence: 0.5,
+      seenCount: 5,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      status: "active" as const,
+      pinned: false,
+      useWhen: ["casual_chat"],
+      avoidWhen: [],
+    }));
+    store.profile.preferences = [];
+    await saveStore(store);
+
+    const result = await getStyleBriefStructured("casual_chat");
+    assert.ok(result.brief.includes("Style brief:"));
+    assert.equal(result.habits.length, 8);
+    assert.equal(result.interactionProfile.length, 0);
+    assert.ok(result.profileNudge?.includes("distill_interaction_profile"));
+  });
+
+  it("does not return a profile nudge for candidate-only habits", async () => {
+    const now = new Date().toISOString();
+    const store = await loadStore();
+    store.habits = Array.from({ length: 10 }, (_, index) => ({
+      id: `candidate-habit-${index}`,
+      kind: "catchphrase" as const,
+      text: `candidate-${index}`,
+      confidence: 0.2,
+      seenCount: 1,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      status: "candidate" as const,
+      pinned: false,
+      useWhen: ["casual_chat"],
+      avoidWhen: [],
+    }));
+    store.profile.preferences = [];
+    await saveStore(store);
+
+    const result = await getStyleBriefStructured("casual_chat");
+    assert.equal(result.profileNudge, null);
+  });
+
+  it("keeps the legacy text-only brief API", async () => {
+    const now = new Date().toISOString();
+    const store = await loadStore();
+    store.habits = [
+      {
+        id: "legacy-brief-active",
+        kind: "catchphrase" as const,
+        text: "legacy-brief-marker",
+        confidence: 0.5,
+        seenCount: 5,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        status: "active" as const,
+        pinned: false,
+        useWhen: ["casual_chat"],
+        avoidWhen: [],
+      },
+    ];
+    await saveStore(store);
+
+    const brief = await getStyleBrief("casual_chat");
+    assert.ok(brief.includes("legacy-brief-marker"));
+    assert.ok(!brief.trim().startsWith("{"));
+  });
+
+  it("does not return a profile nudge when an active profile preference exists", async () => {
+    const now = new Date().toISOString();
+    const store = await loadStore();
+    store.habits = Array.from({ length: 10 }, (_, index) => ({
+      id: `active-habit-${index}`,
+      kind: "catchphrase" as const,
+      text: `habit-${index}`,
+      confidence: 0.5,
+      seenCount: 5,
+      firstSeenAt: now,
+      lastSeenAt: now,
+      status: "active" as const,
+      pinned: false,
+      useWhen: ["casual_chat"],
+      avoidWhen: [],
+    }));
+    store.profile.preferences = [
+      {
+        id: "profile-active",
+        category: "workflow" as const,
+        text: "prefers plan then implementation",
+        confidence: 0.7,
+        seenCount: 5,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        status: "active" as const,
+        pinned: false,
+        useWhen: ["technical_chat"],
+        avoidWhen: [],
+      },
+    ];
+    await saveStore(store);
+
+    const result = await getStyleBriefStructured("casual_chat");
+    assert.equal(result.profileNudge, null);
   });
 });
 
@@ -547,6 +659,20 @@ describe("cleanup lifecycle (via observeUserMessage)", () => {
 // =============================================================================
 
 describe("observeUserMessage with hints", () => {
+  it("serializes concurrent observations without losing updates", async () => {
+    await Promise.all([
+      observeUserMessage("巴适", "casual_chat"),
+      observeUserMessage("巴适", "technical_chat"),
+      observeUserMessage("巴适", "planning"),
+    ]);
+
+    const habits = await listStyleHabits();
+    const basi = habits.find((habit) => habit.text === "巴适");
+    assert.ok(basi);
+    assert.equal(basi!.seenCount, 3);
+    assert.equal(basi!.status, "active");
+  });
+
   it("learns a custom idiolect kind reported by host LLM", async () => {
     const result = await observeUserMessage(
       "今天天气好巴适莫",

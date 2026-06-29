@@ -2,7 +2,14 @@ import { cleanupStore } from "./cleanup.js";
 import { evaluateHabitForContext, evaluatePreferenceForContext } from "./context.js";
 import { extractHabits } from "./extract.js";
 import { isSensitive, sanitizeExample } from "./sensitivity.js";
-import { clamp, loadStore, makeId, makeProfileId, MAX_SEEN_CONTEXTS, saveStore } from "./store.js";
+import {
+  clamp,
+  loadStore,
+  makeId,
+  makeProfileId,
+  MAX_SEEN_CONTEXTS,
+  withStoreMutation,
+} from "./store.js";
 import type {
   ExtractedHabit,
   HabitKind,
@@ -16,8 +23,12 @@ import type {
   ProfileReviewSuggestion,
   ReviewResult,
   ReviewSuggestion,
+  StyleBriefHabit,
+  StyleBriefPreference,
+  StyleBriefResult,
   StyleHabit,
   StyleMemoryScore,
+  StyleStore,
   StyleSettings,
 } from "./types.js";
 
@@ -69,65 +80,66 @@ const HIGH_CONVICTION_MIN_SEEN = 2;
 /** Max length we ever accept for a hint's `text` field. */
 const HINT_MAX_TEXT_LEN = 40;
 
+const PROFILE_NUDGE =
+  "You have learned several style habits, but no active interaction profile yet. If recent user messages reveal concrete collaboration preferences, consider distilling them with distill_interaction_profile. Keep it behavioral, not personal.";
+
 export async function observeUserMessage(
   text: string,
   context?: string,
   hints?: HintInput[],
   profileHints?: ProfileHintInput[],
 ): Promise<ObserveResult> {
-  const store = await loadStore();
-  const cleanup = cleanupStore(store);
-  const ignored: string[] = [];
+  return withStoreMutation((store) => {
+    const cleanup = cleanupStore(store);
+    const ignored: string[] = [];
 
-  if (!store.settings.allowLearning) {
-    ignored.push("learning_disabled");
-    await saveStore(store);
-    return { learned: [], updated: [], profileLearned: [], profileUpdated: [], ignored, cleanup };
-  }
+    if (!store.settings.allowLearning) {
+      ignored.push("learning_disabled");
+      return { learned: [], updated: [], profileLearned: [], profileUpdated: [], ignored, cleanup };
+    }
 
-  // Sensitive messages: skip rule-based extraction AND drop hints entirely
-  // (the host LLM may have summarized something secret into a hint).
-  if (isSensitive(text, context)) {
-    ignored.push("sensitive_context");
-    await saveStore(store);
-    return { learned: [], updated: [], profileLearned: [], profileUpdated: [], ignored, cleanup };
-  }
+    // Sensitive messages: skip rule-based extraction AND drop hints entirely
+    // (the host LLM may have summarized something secret into a hint).
+    if (isSensitive(text, context)) {
+      ignored.push("sensitive_context");
+      return { learned: [], updated: [], profileLearned: [], profileUpdated: [], ignored, cleanup };
+    }
 
-  const ruleExtracted = extractHabits(text).map(
-    (item): ExtractedHabit => ({ ...item, source: item.source ?? "rule" }),
-  );
-
-  const hintExtracted = normalizeHints(hints, ignored, store.settings.maxExampleLen);
-  const profileExtracted = normalizeProfileHints(
-    profileHints,
-    ignored,
-    store.settings.maxExampleLen,
-  );
-
-  const learned: StyleHabit[] = [];
-  const updated: StyleHabit[] = [];
-  const profileLearned: InteractionPreference[] = [];
-  const profileUpdated: InteractionPreference[] = [];
-  const now = new Date().toISOString();
-
-  for (const item of [...ruleExtracted, ...hintExtracted]) {
-    const { habit, isNew } = upsertHabit(store.habits, item, now, store.settings, context);
-    (isNew ? learned : updated).push(habit);
-  }
-
-  for (const item of profileExtracted) {
-    const { preference, isNew } = upsertPreference(
-      store.profile.preferences,
-      item,
-      now,
-      store.settings,
-      context,
+    const ruleExtracted = extractHabits(text).map(
+      (item): ExtractedHabit => ({ ...item, source: item.source ?? "rule" }),
     );
-    (isNew ? profileLearned : profileUpdated).push(preference);
-  }
 
-  await saveStore(store);
-  return { learned, updated, profileLearned, profileUpdated, ignored, cleanup };
+    const hintExtracted = normalizeHints(hints, ignored, store.settings.maxExampleLen);
+    const profileExtracted = normalizeProfileHints(
+      profileHints,
+      ignored,
+      store.settings.maxExampleLen,
+    );
+
+    const learned: StyleHabit[] = [];
+    const updated: StyleHabit[] = [];
+    const profileLearned: InteractionPreference[] = [];
+    const profileUpdated: InteractionPreference[] = [];
+    const now = new Date().toISOString();
+
+    for (const item of [...ruleExtracted, ...hintExtracted]) {
+      const { habit, isNew } = upsertHabit(store.habits, item, now, store.settings, context);
+      (isNew ? learned : updated).push(habit);
+    }
+
+    for (const item of profileExtracted) {
+      const { preference, isNew } = upsertPreference(
+        store.profile.preferences,
+        item,
+        now,
+        store.settings,
+        context,
+      );
+      (isNew ? profileLearned : profileUpdated).push(preference);
+    }
+
+    return { learned, updated, profileLearned, profileUpdated, ignored, cleanup };
+  });
 }
 
 /**
@@ -139,79 +151,122 @@ export async function observeUserMessage(
 export async function distillRecentStyle(
   habits: HintInput[],
 ): Promise<ObserveResult> {
-  const store = await loadStore();
-  const cleanup = cleanupStore(store);
-  const ignored: string[] = [];
+  return withStoreMutation((store) => {
+    const cleanup = cleanupStore(store);
+    const ignored: string[] = [];
 
-  if (!store.settings.allowLearning) {
-    ignored.push("learning_disabled");
-    await saveStore(store);
-    return { learned: [], updated: [], profileLearned: [], profileUpdated: [], ignored, cleanup };
-  }
+    if (!store.settings.allowLearning) {
+      ignored.push("learning_disabled");
+      return { learned: [], updated: [], profileLearned: [], profileUpdated: [], ignored, cleanup };
+    }
 
-  const distilled = normalizeHints(habits, ignored, store.settings.maxExampleLen).map(
-    (item): ExtractedHabit => ({ ...item, source: "distill" }),
-  );
+    const distilled = normalizeHints(habits, ignored, store.settings.maxExampleLen).map(
+      (item): ExtractedHabit => ({ ...item, source: "distill" }),
+    );
 
-  const learned: StyleHabit[] = [];
-  const updated: StyleHabit[] = [];
-  const now = new Date().toISOString();
+    const learned: StyleHabit[] = [];
+    const updated: StyleHabit[] = [];
+    const now = new Date().toISOString();
 
-  for (const item of distilled) {
-    // The "context" we tag distilled habits with is generic — these
-    // observations are about the user's voice as a whole, not a specific
-    // chat. We still record it so cross-context counters move.
-    const { habit, isNew } = upsertHabit(store.habits, item, now, store.settings, "distilled");
-    (isNew ? learned : updated).push(habit);
-  }
+    for (const item of distilled) {
+      // The "context" we tag distilled habits with is generic — these
+      // observations are about the user's voice as a whole, not a specific
+      // chat. We still record it so cross-context counters move.
+      const { habit, isNew } = upsertHabit(store.habits, item, now, store.settings, "distilled");
+      (isNew ? learned : updated).push(habit);
+    }
 
-  await saveStore(store);
-  return { learned, updated, profileLearned: [], profileUpdated: [], ignored, cleanup };
+    return { learned, updated, profileLearned: [], profileUpdated: [], ignored, cleanup };
+  });
 }
 
 export async function distillInteractionProfile(
   preferences: ProfileHintInput[],
 ): Promise<ProfileDistillResult> {
-  const store = await loadStore();
-  const cleanup = cleanupStore(store);
-  const ignored: string[] = [];
+  return withStoreMutation((store) => {
+    const cleanup = cleanupStore(store);
+    const ignored: string[] = [];
 
-  if (!store.settings.allowLearning) {
-    ignored.push("learning_disabled");
-    await saveStore(store);
-    return { learned: [], updated: [], ignored, cleanup };
-  }
+    if (!store.settings.allowLearning) {
+      ignored.push("learning_disabled");
+      return { learned: [], updated: [], ignored, cleanup };
+    }
 
-  const distilled = normalizeProfileHints(
-    preferences,
-    ignored,
-    store.settings.maxExampleLen,
-  ).map((item) => ({ ...item, source: "distill" as const }));
+    const distilled = normalizeProfileHints(
+      preferences,
+      ignored,
+      store.settings.maxExampleLen,
+    ).map((item) => ({ ...item, source: "distill" as const }));
 
-  const learned: InteractionPreference[] = [];
-  const updated: InteractionPreference[] = [];
-  const now = new Date().toISOString();
+    const learned: InteractionPreference[] = [];
+    const updated: InteractionPreference[] = [];
+    const now = new Date().toISOString();
 
-  for (const item of distilled) {
-    const { preference, isNew } = upsertPreference(
-      store.profile.preferences,
-      item,
-      now,
-      store.settings,
-      "distilled",
-    );
-    (isNew ? learned : updated).push(preference);
-  }
+    for (const item of distilled) {
+      const { preference, isNew } = upsertPreference(
+        store.profile.preferences,
+        item,
+        now,
+        store.settings,
+        "distilled",
+      );
+      (isNew ? learned : updated).push(preference);
+    }
 
-  await saveStore(store);
-  return { learned, updated, ignored, cleanup };
+    return { learned, updated, ignored, cleanup };
+  });
 }
 
 export async function getStyleBrief(context?: string): Promise<string> {
-  const store = await loadStore();
-  const cleanup = cleanupStore(store);
-  if (cleanup.archived || cleanup.deleted) await saveStore(store);
+  const result = await getStyleBriefStructured(context);
+  return result.brief;
+}
 
+export async function getStyleBriefStructured(context?: string): Promise<StyleBriefResult> {
+  return withStoreMutation((store) => {
+    const cleanup = cleanupStore(store);
+    const { habits, preferences } = selectBriefItems(store, context);
+
+    const now = new Date().toISOString();
+    for (const { habit } of habits) habit.lastReturnedAt = now;
+    for (const { preference } of preferences) preference.lastReturnedAt = now;
+
+    return {
+      brief: renderStyleBrief(habits, preferences, context),
+      profileNudge: getProfileNudge(store),
+      context,
+      habits: habits.map(({ habit }) => toBriefHabit(habit)),
+      interactionProfile: preferences.map(({ preference }) => toBriefPreference(preference)),
+    };
+  });
+}
+
+export async function listStyleHabits(): Promise<StyleHabit[]> {
+  const store = await loadStore();
+  return [...store.habits].sort((a, b) => b.confidence - a.confidence || b.seenCount - a.seenCount);
+}
+
+export async function listInteractionProfile(): Promise<InteractionPreference[]> {
+  const store = await loadStore();
+  return [...store.profile.preferences].sort(
+    (a, b) => b.confidence - a.confidence || b.seenCount - a.seenCount,
+  );
+}
+
+interface SelectedHabit {
+  habit: StyleHabit;
+  decision: ReturnType<typeof evaluateHabitForContext>;
+}
+
+interface SelectedPreference {
+  preference: InteractionPreference;
+  decision: ReturnType<typeof evaluatePreferenceForContext>;
+}
+
+function selectBriefItems(
+  store: StyleStore,
+  context?: string,
+): { habits: SelectedHabit[]; preferences: SelectedPreference[] } {
   const habits = store.habits
     .filter((habit) => habit.status === "active" && habit.confidence >= 0.3)
     .map((habit) => ({ habit, decision: evaluateHabitForContext(habit, context) }))
@@ -223,6 +278,7 @@ export async function getStyleBrief(context?: string): Promise<string> {
         b.habit.seenCount - a.habit.seenCount,
     )
     .slice(0, store.settings.maxBriefItems);
+
   const preferences = store.profile.preferences
     .filter((preference) => preference.status === "active" && preference.confidence >= 0.3)
     .map((preference) => ({
@@ -238,14 +294,17 @@ export async function getStyleBrief(context?: string): Promise<string> {
     )
     .slice(0, Math.min(4, store.settings.maxBriefItems));
 
+  return { habits, preferences };
+}
+
+function renderStyleBrief(
+  habits: SelectedHabit[],
+  preferences: SelectedPreference[],
+  context?: string,
+): string {
   if (habits.length === 0 && preferences.length === 0) {
     return "No stable style habits yet. Keep the reply natural and do not imitate aggressively.";
   }
-
-  const now = new Date().toISOString();
-  for (const { habit } of habits) habit.lastReturnedAt = now;
-  for (const { preference } of preferences) preference.lastReturnedAt = now;
-  await saveStore(store);
 
   return [
     "Style brief: use lightly, never imitate aggressively, and never reveal private memories.",
@@ -278,234 +337,263 @@ export async function getStyleBrief(context?: string): Promise<string> {
   ].join("\n");
 }
 
-export async function listStyleHabits(): Promise<StyleHabit[]> {
-  const store = await loadStore();
-  return [...store.habits].sort((a, b) => b.confidence - a.confidence || b.seenCount - a.seenCount);
+function getProfileNudge(store: StyleStore): string | null {
+  const hasActiveProfile = store.profile.preferences.some(
+    (preference) => preference.status === "active",
+  );
+  if (hasActiveProfile) return null;
+  const stableHabits = store.habits.filter(
+    (habit) => habit.status === "active" && habit.confidence >= 0.3,
+  );
+  if (stableHabits.length < 10) return null;
+  return PROFILE_NUDGE;
 }
 
-export async function listInteractionProfile(): Promise<InteractionPreference[]> {
-  const store = await loadStore();
-  return [...store.profile.preferences].sort(
-    (a, b) => b.confidence - a.confidence || b.seenCount - a.seenCount,
-  );
+function toBriefHabit(habit: StyleHabit): StyleBriefHabit {
+  return {
+    id: habit.id,
+    kind: habit.kind,
+    text: habit.text,
+    locale: habit.locale,
+    confidence: habit.confidence,
+    seenCount: habit.seenCount,
+    useWhen: habit.useWhen,
+    avoidWhen: habit.avoidWhen,
+    example: habit.example,
+    notes: habit.notes,
+  };
+}
+
+function toBriefPreference(preference: InteractionPreference): StyleBriefPreference {
+  return {
+    id: preference.id,
+    category: preference.category,
+    text: preference.text,
+    confidence: preference.confidence,
+    seenCount: preference.seenCount,
+    useWhen: preference.useWhen,
+    avoidWhen: preference.avoidWhen,
+    example: preference.example,
+    notes: preference.notes,
+  };
 }
 
 export async function reviewInteractionProfile(limit = 12): Promise<ProfileReviewResult> {
-  const store = await loadStore();
-  const cleanup = cleanupStore(store);
-  if (cleanup.archived || cleanup.deleted) await saveStore(store);
+  return withStoreMutation((store) => {
+    cleanupStore(store);
 
-  const preferences = store.profile.preferences;
-  const suggestions = [...preferences]
-    .sort((a, b) => profileReviewPriority(b) - profileReviewPriority(a))
-    .slice(0, Math.max(1, Math.min(limit, 50)))
-    .map(toProfileReviewSuggestion);
+    const preferences = store.profile.preferences;
+    const suggestions = [...preferences]
+      .sort((a, b) => profileReviewPriority(b) - profileReviewPriority(a))
+      .slice(0, Math.max(1, Math.min(limit, 50)))
+      .map(toProfileReviewSuggestion);
 
-  return {
-    summary: {
-      total: preferences.length,
-      active: preferences.filter((preference) => preference.status === "active").length,
-      candidates: preferences.filter((preference) => preference.status === "candidate").length,
-      archived: preferences.filter((preference) => preference.status === "archived").length,
-      pinned: preferences.filter((preference) => preference.pinned).length,
-      allowLearning: store.settings.allowLearning,
-    },
-    suggestions,
-  };
+    return {
+      summary: {
+        total: preferences.length,
+        active: preferences.filter((preference) => preference.status === "active").length,
+        candidates: preferences.filter((preference) => preference.status === "candidate").length,
+        archived: preferences.filter((preference) => preference.status === "archived").length,
+        pinned: preferences.filter((preference) => preference.pinned).length,
+        allowLearning: store.settings.allowLearning,
+      },
+      suggestions,
+    };
+  });
 }
 
 export async function reviewStyleHabits(limit = 12): Promise<ReviewResult> {
-  const store = await loadStore();
-  const cleanup = cleanupStore(store);
-  if (cleanup.archived || cleanup.deleted) await saveStore(store);
+  return withStoreMutation((store) => {
+    cleanupStore(store);
 
-  const suggestions = [...store.habits]
-    .sort((a, b) => reviewPriority(b) - reviewPriority(a))
-    .slice(0, Math.max(1, Math.min(limit, 50)))
-    .map(toReviewSuggestion);
+    const suggestions = [...store.habits]
+      .sort((a, b) => reviewPriority(b) - reviewPriority(a))
+      .slice(0, Math.max(1, Math.min(limit, 50)))
+      .map(toReviewSuggestion);
 
-  return {
-    summary: {
-      total: store.habits.length,
-      active: store.habits.filter((habit) => habit.status === "active").length,
-      candidates: store.habits.filter((habit) => habit.status === "candidate").length,
-      archived: store.habits.filter((habit) => habit.status === "archived").length,
-      pinned: store.habits.filter((habit) => habit.pinned).length,
-      allowLearning: store.settings.allowLearning,
-    },
-    suggestions,
-  };
+    return {
+      summary: {
+        total: store.habits.length,
+        active: store.habits.filter((habit) => habit.status === "active").length,
+        candidates: store.habits.filter((habit) => habit.status === "candidate").length,
+        archived: store.habits.filter((habit) => habit.status === "archived").length,
+        pinned: store.habits.filter((habit) => habit.pinned).length,
+        allowLearning: store.settings.allowLearning,
+      },
+      suggestions,
+    };
+  });
 }
 
 export async function getStyleMemoryScore(): Promise<StyleMemoryScore> {
-  const store = await loadStore();
-  const cleanup = cleanupStore(store);
-  if (cleanup.archived || cleanup.deleted) await saveStore(store);
+  return withStoreMutation((store) => {
+    cleanupStore(store);
 
-  const habits = store.habits;
-  const preferences = store.profile.preferences;
-  const allItems = [...habits, ...preferences];
-  const activeHabits = habits.filter((habit) => habit.status === "active");
-  const candidateHabits = habits.filter((habit) => habit.status === "candidate");
-  const archivedHabits = habits.filter((habit) => habit.status === "archived");
-  const activeProfilePreferences = preferences.filter(
-    (preference) => preference.status === "active",
-  );
-  const candidateProfilePreferences = preferences.filter(
-    (preference) => preference.status === "candidate",
-  );
-  const archivedProfilePreferences = preferences.filter(
-    (preference) => preference.status === "archived",
-  );
+    const habits = store.habits;
+    const preferences = store.profile.preferences;
+    const allItems = [...habits, ...preferences];
+    const activeHabits = habits.filter((habit) => habit.status === "active");
+    const candidateHabits = habits.filter((habit) => habit.status === "candidate");
+    const archivedHabits = habits.filter((habit) => habit.status === "archived");
+    const activeProfilePreferences = preferences.filter(
+      (preference) => preference.status === "active",
+    );
+    const candidateProfilePreferences = preferences.filter(
+      (preference) => preference.status === "candidate",
+    );
+    const archivedProfilePreferences = preferences.filter(
+      (preference) => preference.status === "archived",
+    );
 
-  const activeItems = [...activeHabits, ...activeProfilePreferences];
-  const candidateItems = [...candidateHabits, ...candidateProfilePreferences];
-  const pinnedItems = allItems.filter((item) => item.pinned).length;
+    const activeItems = [...activeHabits, ...activeProfilePreferences];
+    const candidateItems = [...candidateHabits, ...candidateProfilePreferences];
+    const pinnedItems = allItems.filter((item) => item.pinned).length;
 
-  const activeCoverage = Math.min(1, activeItems.length / 6);
-  const profileCoverage = activeProfilePreferences.length > 0 ? 1 : 0;
-  const readiness = score(20 + activeCoverage * 60 + profileCoverage * 20);
+    const activeCoverage = Math.min(1, activeItems.length / 6);
+    const profileCoverage = activeProfilePreferences.length > 0 ? 1 : 0;
+    const readiness = score(20 + activeCoverage * 60 + profileCoverage * 20);
 
-  const stableSeenCounts = activeItems.length
-    ? average(activeItems.map((item) => Math.min(1, item.seenCount / 5)))
-    : 0;
-  const stableConfidence = activeItems.length
-    ? average(activeItems.map((item) => item.confidence))
-    : 0;
-  const candidatePenalty = allItems.length ? candidateItems.length / allItems.length : 0;
-  const stability = score((stableSeenCounts * 0.45 + stableConfidence * 0.55) * 100 - candidatePenalty * 20);
+    const stableSeenCounts = activeItems.length
+      ? average(activeItems.map((item) => Math.min(1, item.seenCount / 5)))
+      : 0;
+    const stableConfidence = activeItems.length
+      ? average(activeItems.map((item) => item.confidence))
+      : 0;
+    const candidatePenalty = allItems.length ? candidateItems.length / allItems.length : 0;
+    const stability = score((stableSeenCounts * 0.45 + stableConfidence * 0.55) * 100 - candidatePenalty * 20);
 
-  const newestSeenAt = newestDate(allItems.map((item) => item.lastSeenAt));
-  const freshness = newestSeenAt
-    ? score(100 - Math.min(100, ageDays(newestSeenAt) * 4))
-    : 0;
+    const newestSeenAt = newestDate(allItems.map((item) => item.lastSeenAt));
+    const freshness = newestSeenAt
+      ? score(100 - Math.min(100, ageDays(newestSeenAt) * 4))
+      : 0;
 
-  const driftRisk = score(
-    candidateItems.length * 7 +
-      archivedHabits.length * 3 +
-      archivedProfilePreferences.length * 3 +
-      Math.max(0, candidateItems.length - activeItems.length) * 6,
-  );
+    const driftRisk = score(
+      candidateItems.length * 7 +
+        archivedHabits.length * 3 +
+        archivedProfilePreferences.length * 3 +
+        Math.max(0, candidateItems.length - activeItems.length) * 6,
+    );
 
-  const expressiveHabits = habits.filter((habit) =>
-    ["catchphrase", "dialect_marker", "emoji", "punctuation", "sentence_final_particle", "idiolect"].includes(
-      habit.kind,
-    ),
-  );
-  const overfitRisk = score(
-    expressiveHabits.length * 6 +
-      Math.max(0, expressiveHabits.length - activeProfilePreferences.length * 2) * 5,
-  );
+    const expressiveHabits = habits.filter((habit) =>
+      ["catchphrase", "dialect_marker", "emoji", "punctuation", "sentence_final_particle", "idiolect"].includes(
+        habit.kind,
+      ),
+    );
+    const overfitRisk = score(
+      expressiveHabits.length * 6 +
+        Math.max(0, expressiveHabits.length - activeProfilePreferences.length * 2) * 5,
+    );
 
-  const briefRefreshRecommended = activeItems.some(
-    (item) => !item.lastReturnedAt || item.lastSeenAt > item.lastReturnedAt,
-  );
-  const overall = score(
-    readiness * 0.38 +
-      stability * 0.32 +
-      freshness * 0.15 +
-      (100 - driftRisk) * 0.1 +
-      (100 - overfitRisk) * 0.05,
-  );
+    const briefRefreshRecommended = activeItems.some(
+      (item) => !item.lastReturnedAt || item.lastSeenAt > item.lastReturnedAt,
+    );
+    const overall = score(
+      readiness * 0.38 +
+        stability * 0.32 +
+        freshness * 0.15 +
+        (100 - driftRisk) * 0.1 +
+        (100 - overfitRisk) * 0.05,
+    );
 
-  const recommendations: string[] = [];
-  if (activeItems.length === 0) {
-    recommendations.push("Keep learning: no active style or interaction profile items are ready yet.");
-  }
-  if (activeProfilePreferences.length === 0) {
-    recommendations.push("Seed at least one concrete interaction preference so the agent learns how to collaborate, not just how the user writes.");
-  }
-  if (candidateItems.length >= Math.max(6, activeItems.length * 2)) {
-    recommendations.push("Review candidates: many unconfirmed items may increase drift.");
-  }
-  if (overfitRisk >= 60) {
-    recommendations.push("Use style lightly: expressive habits are dense, so avoid mechanical imitation.");
-  }
-  if (briefRefreshRecommended) {
-    recommendations.push("Refresh alignment: call get_style_brief before the next substantial reply.");
-  }
-  if (!store.settings.allowLearning) {
-    recommendations.push("Learning is off: the store is in read-only reuse mode.");
-  }
-  if (recommendations.length === 0) {
-    recommendations.push("Memory looks usable: keep observing lightly and refresh the brief periodically.");
-  }
+    const recommendations: string[] = [];
+    if (activeItems.length === 0) {
+      recommendations.push("Keep learning: no active style or interaction profile items are ready yet.");
+    }
+    if (activeProfilePreferences.length === 0) {
+      recommendations.push("Seed at least one concrete interaction preference so the agent learns how to collaborate, not just how the user writes.");
+    }
+    if (candidateItems.length >= Math.max(6, activeItems.length * 2)) {
+      recommendations.push("Review candidates: many unconfirmed items may increase drift.");
+    }
+    if (overfitRisk >= 60) {
+      recommendations.push("Use style lightly: expressive habits are dense, so avoid mechanical imitation.");
+    }
+    if (briefRefreshRecommended) {
+      recommendations.push("Refresh alignment: call get_style_brief before the next substantial reply.");
+    }
+    if (!store.settings.allowLearning) {
+      recommendations.push("Learning is off: the store is in read-only reuse mode.");
+    }
+    if (recommendations.length === 0) {
+      recommendations.push("Memory looks usable: keep observing lightly and refresh the brief periodically.");
+    }
 
-  return {
-    overall,
-    readiness,
-    stability,
-    freshness,
-    driftRisk,
-    overfitRisk,
-    briefRefreshRecommended,
-    counts: {
-      habits: habits.length,
-      activeHabits: activeHabits.length,
-      candidateHabits: candidateHabits.length,
-      archivedHabits: archivedHabits.length,
-      profilePreferences: preferences.length,
-      activeProfilePreferences: activeProfilePreferences.length,
-      candidateProfilePreferences: candidateProfilePreferences.length,
-      archivedProfilePreferences: archivedProfilePreferences.length,
-      pinnedItems,
-    },
-    recommendations,
-  };
+    return {
+      overall,
+      readiness,
+      stability,
+      freshness,
+      driftRisk,
+      overfitRisk,
+      briefRefreshRecommended,
+      counts: {
+        habits: habits.length,
+        activeHabits: activeHabits.length,
+        candidateHabits: candidateHabits.length,
+        archivedHabits: archivedHabits.length,
+        profilePreferences: preferences.length,
+        activeProfilePreferences: activeProfilePreferences.length,
+        candidateProfilePreferences: candidateProfilePreferences.length,
+        archivedProfilePreferences: archivedProfilePreferences.length,
+        pinnedItems,
+      },
+      recommendations,
+    };
+  });
 }
 
 export async function forgetStyleHabit(idOrText: string): Promise<boolean> {
-  const store = await loadStore();
-  const before = store.habits.length;
-  // Match by id first (precise), then fall back to text (case-insensitive)
-  store.habits = store.habits.filter(
-    (habit) =>
-      habit.id !== idOrText &&
-      habit.text.toLowerCase() !== idOrText.toLowerCase(),
-  );
-  await saveStore(store);
-  return store.habits.length !== before;
+  return withStoreMutation((store) => {
+    const before = store.habits.length;
+    // Match by id first (precise), then fall back to text (case-insensitive)
+    store.habits = store.habits.filter(
+      (habit) =>
+        habit.id !== idOrText &&
+        habit.text.toLowerCase() !== idOrText.toLowerCase(),
+    );
+    return store.habits.length !== before;
+  });
 }
 
 export async function forgetInteractionPreference(idOrText: string): Promise<boolean> {
-  const store = await loadStore();
-  const before = store.profile.preferences.length;
-  const needle = idOrText.toLowerCase();
-  store.profile.preferences = store.profile.preferences.filter(
-    (preference) =>
-      preference.id !== idOrText &&
-      preference.text.toLowerCase() !== needle,
-  );
-  await saveStore(store);
-  return store.profile.preferences.length !== before;
+  return withStoreMutation((store) => {
+    const before = store.profile.preferences.length;
+    const needle = idOrText.toLowerCase();
+    store.profile.preferences = store.profile.preferences.filter(
+      (preference) =>
+        preference.id !== idOrText &&
+        preference.text.toLowerCase() !== needle,
+    );
+    return store.profile.preferences.length !== before;
+  });
 }
 
 export async function pinStyleHabit(idOrText: string, pinned = true): Promise<boolean> {
-  const store = await loadStore();
-  // Match by id first, then by text as fallback
-  const habit = store.habits.find(
-    (item) =>
-      item.id === idOrText || item.text.toLowerCase() === idOrText.toLowerCase(),
-  );
-  if (!habit) return false;
-  habit.pinned = pinned;
-  await saveStore(store);
-  return true;
+  return withStoreMutation((store) => {
+    // Match by id first, then by text as fallback
+    const habit = store.habits.find(
+      (item) =>
+        item.id === idOrText || item.text.toLowerCase() === idOrText.toLowerCase(),
+    );
+    if (!habit) return false;
+    habit.pinned = pinned;
+    return true;
+  });
 }
 
 export async function pinInteractionPreference(
   idOrText: string,
   pinned = true,
 ): Promise<boolean> {
-  const store = await loadStore();
-  const needle = idOrText.toLowerCase();
-  const preference = store.profile.preferences.find(
-    (item) => item.id === idOrText || item.text.toLowerCase() === needle,
-  );
-  if (!preference) return false;
-  preference.pinned = pinned;
-  await saveStore(store);
-  return true;
+  return withStoreMutation((store) => {
+    const needle = idOrText.toLowerCase();
+    const preference = store.profile.preferences.find(
+      (item) => item.id === idOrText || item.text.toLowerCase() === needle,
+    );
+    if (!preference) return false;
+    preference.pinned = pinned;
+    return true;
+  });
 }
 
 // =============================================================================

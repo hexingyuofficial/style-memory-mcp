@@ -245,3 +245,36 @@ export interface StyleMemoryScore {
   };
   recommendations: string[];
 }
+
+export interface StyleBriefHabit {
+  id: string;
+  kind: HabitKind;
+  text: string;
+  locale?: string;
+  confidence: number;
+  seenCount: number;
+  useWhen: string[];
+  avoidWhen: string[];
+  example?: string;
+  notes?: string;
+}
+
+export interface StyleBriefPreference {
+  id: string;
+  category: InteractionPreferenceCategory;
+  text: string;
+  confidence: number;
+  seenCount: number;
+  useWhen: string[];
+  avoidWhen: string[];
+  example?: string;
+  notes?: string;
+}
+
+export interface StyleBriefResult {
+  brief: string;
+  profileNudge: string | null;
+  context?: string;
+  habits: StyleBriefHabit[];
+  interactionProfile: StyleBriefPreference[];
+}

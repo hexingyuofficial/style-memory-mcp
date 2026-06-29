@@ -19,7 +19,7 @@
     "dev": "tsx src/server.ts",
     "start": "node dist/server.js",
     "check": "tsc --noEmit",
-    "test": "node --import tsx --test src/**/*.test.ts"
+    "test": "node scripts/run-tests.mjs"
   },
   "keywords": [
     "mcp",

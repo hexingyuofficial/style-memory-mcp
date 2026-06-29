@@ -113,6 +113,11 @@ per-message `observe_user_message`.
 ## How to use the brief
 
 - Use returned style hints **lightly** — as alignment, not a script.
+- `get_style_brief` returns text. Use `get_style_brief_structured` when
+  `habits` / `interactionProfile` are useful, and treat `profileNudge` as
+  a quiet reminder to call
+  `distill_interaction_profile` only when recent user messages clearly show
+  concrete collaboration preferences.
 - Shape the assistant's own stable collaboration style; do not copy the user's wording mechanically.
 - Follow interaction-profile preferences when they are relevant to the current context.
 - Never over-imitate the user.

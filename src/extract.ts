@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import type { ExtractedHabit } from "./types.js";
+import type { HabitKind } from "./types.js";
 
 // =============================================================================
 // Style extraction: rule-based detection of conversational style signals.
@@ -239,6 +241,45 @@ const EN_INTERNET_SLANG_REGEXES: Array<{
   };
 });
 
+type CustomMatchMode = "substring" | "word";
+
+interface CustomDictionaryEntry {
+  kind: HabitKind;
+  text: string;
+  locale?: string;
+  confidenceDelta?: number;
+  useWhen?: string[];
+  avoidWhen?: string[];
+  notes?: string;
+  match?: CustomMatchMode;
+}
+
+interface NormalizedCustomDictionaryEntry {
+  kind: HabitKind;
+  text: string;
+  locale?: string;
+  confidenceDelta: number;
+  useWhen: string[];
+  avoidWhen: string[];
+  notes?: string;
+  match: CustomMatchMode;
+  re?: RegExp;
+}
+
+const VALID_CUSTOM_KINDS = new Set<HabitKind>([
+  "catchphrase",
+  "dialect_marker",
+  "emoji",
+  "punctuation",
+  "tone",
+  "language_mix",
+  "sentence_final_particle",
+  "structure",
+  "idiolect",
+]);
+
+const CUSTOM_DICTIONARY = loadCustomDictionary();
+
 // ---------------------------------------------------------------------------
 // Regex patterns
 // ---------------------------------------------------------------------------
@@ -274,6 +315,7 @@ export function extractHabits(text: string): ExtractedHabit[] {
   collectEmoticons(normalized, results);
   collectPunctuation(normalized, results);
   collectLanguageMix(normalized, results);
+  collectCustomDictionary(normalized, results);
 
   return dedupe(results);
 }
@@ -437,6 +479,27 @@ function collectLanguageMix(text: string, results: ExtractedHabit[]) {
   }
 }
 
+function collectCustomDictionary(text: string, results: ExtractedHabit[]) {
+  for (const entry of CUSTOM_DICTIONARY) {
+    const matched =
+      entry.match === "word"
+        ? Boolean(entry.re?.test(text))
+        : text.includes(entry.text);
+    if (!matched) continue;
+
+    results.push({
+      kind: entry.kind,
+      text: entry.text,
+      locale: entry.locale,
+      confidenceDelta: entry.confidenceDelta,
+      useWhen: entry.useWhen,
+      avoidWhen: entry.avoidWhen,
+      notes: entry.notes,
+      source: "rule",
+    });
+  }
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -449,4 +512,81 @@ function dedupe(items: ExtractedHabit[]): ExtractedHabit[] {
     seen.add(key);
     return true;
   });
+}
+
+function loadCustomDictionary(): NormalizedCustomDictionaryEntry[] {
+  const dataPath = process.env.STYLE_MEMORY_DICTIONARY_PATH?.trim();
+  if (!dataPath) return [];
+
+  try {
+    const raw = JSON.parse(readFileSync(dataPath, "utf8"));
+    const entries = Array.isArray(raw) ? raw : raw?.habits;
+    if (!Array.isArray(entries)) {
+      console.warn(
+        `[style-memory-mcp] Ignoring custom dictionary at ${dataPath}: expected an array or { "habits": [...] }.`,
+      );
+      return [];
+    }
+
+    return entries.flatMap((entry) => {
+      const normalized = normalizeCustomDictionaryEntry(entry);
+      return normalized ? [normalized] : [];
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[style-memory-mcp] Failed to load custom dictionary: ${message}`);
+    return [];
+  }
+}
+
+function normalizeCustomDictionaryEntry(
+  entry: unknown,
+): NormalizedCustomDictionaryEntry | undefined {
+  if (!entry || typeof entry !== "object") return undefined;
+  const candidate = entry as Partial<CustomDictionaryEntry>;
+  if (!candidate.kind || !VALID_CUSTOM_KINDS.has(candidate.kind)) return undefined;
+  if (typeof candidate.text !== "string") return undefined;
+
+  const text = candidate.text.trim();
+  if (!text || text.length > 80 || COMMON_ZH_FILLERS.has(text)) return undefined;
+
+  const match = candidate.match === "word" ? "word" : "substring";
+  return {
+    kind: candidate.kind,
+    text,
+    locale: cleanString(candidate.locale, 40),
+    confidenceDelta: cleanConfidence(candidate.confidenceDelta),
+    useWhen: cleanStringList(candidate.useWhen, 8, ["casual_chat"]),
+    avoidWhen: cleanStringList(candidate.avoidWhen, 8, ["formal_writing", "high_stakes_advice"]),
+    notes: cleanString(candidate.notes, 160),
+    match,
+    re: match === "word" ? wordRegex(text) : undefined,
+  };
+}
+
+function cleanConfidence(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0.14;
+  return Math.min(1, Math.max(0.01, value));
+}
+
+function cleanString(value: unknown, maxLen: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  return text && text.length <= maxLen ? text : undefined;
+}
+
+function cleanStringList(value: unknown, maxItems: number, fallback: string[]): string[] {
+  if (!Array.isArray(value)) return fallback;
+  const out: string[] = [];
+  for (const item of value) {
+    const label = cleanString(item, 40);
+    if (label && !out.includes(label)) out.push(label);
+    if (out.length >= maxItems) break;
+  }
+  return out.length ? out : fallback;
+}
+
+function wordRegex(text: string): RegExp {
+  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|\\b)${escaped}(\\b|$)`, "i");
 }

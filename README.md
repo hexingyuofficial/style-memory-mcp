@@ -125,6 +125,25 @@ recommended automatic brief refresh protocol.
 | `STYLE_MEMORY_MAX_BRIEF_ITEMS` | `8` | Max habits returned in a style brief |
 | `STYLE_MEMORY_MAX_EXAMPLE_LEN` | `60` | Max chars for a stored usage example |
 | `STYLE_MEMORY_LEARNING` | `on` | Set to `off` to disable learning |
+| `STYLE_MEMORY_DICTIONARY_PATH` | unset | Path to a custom style dictionary JSON file |
+
+Custom dictionaries can be either an array or `{ "habits": [...] }`:
+
+```json
+{
+  "habits": [
+    {
+      "kind": "catchphrase",
+      "text": "ship it",
+      "locale": "en",
+      "confidenceDelta": 0.14,
+      "useWhen": ["casual_chat"],
+      "avoidWhen": ["formal_writing", "high_stakes_advice"],
+      "match": "word"
+    }
+  ]
+}
+```
 
 ## Tools
 
@@ -140,9 +159,18 @@ concrete collaboration preferences.
 
 ### `get_style_brief`
 
-Returns a short style brief for the agent to use lightly.
+Returns a short text style brief for the agent to use lightly.
 
 Agents should call this at the start of a conversation, or before drafting a friendly reply.
+
+### `get_style_brief_structured`
+
+Returns JSON for agents that want both the text brief and structured metadata:
+
+- `brief`: text that can be placed directly into the agent context
+- `habits`: structured style habits
+- `interactionProfile`: structured collaboration preferences
+- `profileNudge`: a light reminder when stable style habits exist but no stable interaction profile exists yet; otherwise `null`
 
 ### `distill_recent_style`
 

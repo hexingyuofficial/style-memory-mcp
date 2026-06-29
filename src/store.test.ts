@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { defaultSettings, makeId, makeProfileId } from "./store.js";
+import { defaultSettings, makeId, makeProfileId, normalizeStore } from "./store.js";
 
 let savedMinPromoteCount: string | undefined;
 let savedMaxBriefItems: string | undefined;
@@ -65,6 +65,84 @@ describe("defaultSettings", () => {
     const settings = defaultSettings("/tmp/style-memory-test.json");
     assert.equal(settings.minPromoteCount, 5);
     assert.equal(settings.maxBriefItems, 12);
+  });
+});
+
+describe("normalizeStore", () => {
+  it("drops invalid items while preserving valid legacy items", () => {
+    const store = normalizeStore(
+      {
+        version: 1,
+        settings: {},
+        habits: [
+          {
+            kind: "catchphrase",
+            text: "哈哈哈",
+            confidence: 0.5,
+            seenCount: 3,
+            firstSeenAt: "2026-01-01T00:00:00.000Z",
+            lastSeenAt: "2026-01-01T00:00:00.000Z",
+            status: "active",
+            pinned: false,
+            useWhen: ["casual_chat"],
+            avoidWhen: [],
+          },
+          {
+            kind: "not-real",
+            text: "bad",
+          },
+        ],
+        profile: {
+          preferences: [
+            {
+              category: "workflow",
+              text: "prefers plan then implementation",
+              status: "active",
+              useWhen: [],
+              avoidWhen: [],
+            },
+            {
+              category: "workflow",
+              text: "",
+            },
+          ],
+        },
+      },
+      "/tmp/style-memory-test.json",
+    );
+
+    assert.equal(store.habits.length, 1);
+    assert.equal(store.habits[0].text, "哈哈哈");
+    assert.ok(store.habits[0].id);
+    assert.equal(store.profile.preferences.length, 1);
+    assert.equal(store.profile.preferences[0].category, "workflow");
+    assert.ok(store.profile.preferences[0].id);
+  });
+
+  it("starts fresh when the store root shape is corrupt", () => {
+    const store = normalizeStore({ habits: "bad" }, "/tmp/style-memory-test.json");
+    assert.equal(store.habits.length, 0);
+    assert.equal(store.profile.preferences.length, 0);
+  });
+
+  it("normalizes invalid stored settings and pins dataPath to the resolved path", () => {
+    const store = normalizeStore(
+      {
+        settings: {
+          dataPath: "/tmp/evil.json",
+          minPromoteCount: "fast",
+          maxBriefItems: 12,
+          allowLearning: false,
+        },
+        habits: [],
+      },
+      "/tmp/style-memory-test.json",
+    );
+
+    assert.equal(store.settings.dataPath, "/tmp/style-memory-test.json");
+    assert.equal(store.settings.minPromoteCount, 3);
+    assert.equal(store.settings.maxBriefItems, 12);
+    assert.equal(store.settings.allowLearning, false);
   });
 });
 

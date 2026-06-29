@@ -46,7 +46,10 @@ At the start of a new chat, silently call get_style_brief before answering.
 After each user message, call observe_user_message with only the latest user message.
 Do not send secrets, files, private memory dumps, or full conversation logs.
 
-Use the brief to shape the assistant's own stable collaboration style.
+Use the get_style_brief text to shape the assistant's own stable collaboration style.
+If you need structured metadata, call get_style_brief_structured.
+If its `profileNudge` is non-null and recent user messages clearly reveal concrete collaboration preferences,
+consider calling distill_interaction_profile.
 Do not mimic the user mechanically.
 
 Refresh alignment by calling get_style_brief again:

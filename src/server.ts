@@ -9,6 +9,7 @@ import {
   forgetInteractionPreference,
   forgetStyleHabit,
   getStyleBrief,
+  getStyleBriefStructured,
   getStyleMemoryScore,
   listInteractionProfile,
   listStyleHabits,
@@ -18,7 +19,7 @@ import {
   reviewInteractionProfile,
   reviewStyleHabits,
 } from "./memory.js";
-import { loadStore, saveStore } from "./store.js";
+import { withStoreMutation } from "./store.js";
 
 const server = new McpServer({
   name: "style-memory-mcp",
@@ -161,7 +162,7 @@ server.registerTool(
   {
     title: "Get style brief",
     description:
-      "Return a short style brief for the agent to use lightly. Call this at the start of a conversation or before drafting a friendly reply.",
+      "Return a short text style brief for the agent to use lightly. Call this at the start of a conversation or before drafting a friendly reply.",
     inputSchema: {
       context: z
         .string()
@@ -171,6 +172,23 @@ server.registerTool(
     },
   },
   async ({ context }) => safeTextHandler(() => getStyleBrief(context)),
+);
+
+server.registerTool(
+  "get_style_brief_structured",
+  {
+    title: "Get structured style brief",
+    description:
+      "Return the style brief plus structured habits, interaction profile items, and an optional profileNudge for agents that can consume JSON.",
+    inputSchema: {
+      context: z
+        .string()
+        .max(80)
+        .optional()
+        .describe("Short context label. Habits with matching avoidWhen will be omitted."),
+    },
+  },
+  async ({ context }) => safeHandler(() => getStyleBriefStructured(context)),
 );
 
 server.registerTool(
@@ -336,10 +354,10 @@ server.registerTool(
   },
   async ({ enabled }) =>
     safeHandler(async () => {
-      const store = await loadStore();
-      store.settings.allowLearning = enabled;
-      await saveStore(store);
-      return { allowLearning: enabled };
+      return withStoreMutation((store) => {
+        store.settings.allowLearning = enabled;
+        return { allowLearning: enabled };
+      });
     }),
 );
 
@@ -363,8 +381,7 @@ server.registerTool(
   },
   async () =>
     safeHandler(async () => {
-      const store = await loadStore();
-      return {
+      return withStoreMutation((store) => ({
         dataPath: store.settings.dataPath,
         allowLearning: store.settings.allowLearning,
         habits: store.habits.length,
@@ -376,7 +393,7 @@ server.registerTool(
           (preference) => preference.status === "active",
         ).length,
         lastCleanupAt: store.lastCleanupAt,
-      };
+      }));
     }),
 );
 
