@@ -2,6 +2,57 @@
 
 All notable changes to style-memory-mcp will be documented in this file.
 
+Historical entries below describe their original release behavior. They do not override the current runtime protocol.
+
+## [0.6.0] - 2026-08-13
+
+### Added
+
+- **One-time first-run initialization** - a fresh store asks the host to inspect up to 12 host-local sessions from the last 30 days and submit only bounded style aggregates. Hosts without history access can persistently skip the request.
+- **Initialization privacy boundary** - the runtime schema rejects raw sessions, messages, titles, identity/address fields, failure rules, and unknown fields. The MCP stores no conversation history; accepted summaries still pass credential and explicit PII filters.
+- **Idempotent initialization state** - pending, completed, and skipped states persist in the existing v2 store format. Populated v0.5 stores normalize as already initialized.
+
+### Changed
+
+- Semantic expression patterns now activate after two observations across two independent sessions. Initialization contributes only one low-weight candidate observation, so it cannot activate a pattern by itself.
+- The ordinary compatibility-habit default is now two observations. Directional address memory keeps its stricter evidence rules.
+- Runtime, installer, documentation, and package metadata now report `0.6.0`; the default runtime surface remains three tools.
+- The installer CLI accepts both `--store` and `--store-path`, and fresh install roots now create the versioned runtime directory before switching the active launcher.
+
+## [0.5.0] — 2026-08-02
+
+### Added
+
+- **v2 style store and six-section brief** — the persisted profile now separates observed voice, response preferences,
+  expression patterns, two-way addresses, and confirmed failure rules. The brief is rendered as addresses, core voice,
+  expressions, punctuation/markers, companionship preferences, and failure log.
+- **Direction-scoped addresses** — `user→assistant` is recognition-only and never becomes a user name; `assistant→user`
+  requires explicit user request/confirmation. Both directions have independent evidence, state, ids, correction, and capacity.
+- **ExpressionPattern records** — behavior summaries, functions, examples, and bounded `exact_only`/`same_family`/`open_variation`
+  policies replace a literal-only learning model. Patterns need three observations across two sessions; session distillation contributes
+  at most three low-weight candidates and does not immediately activate them.
+- **Runtime protocol** — the default connection exposes only `bootstrap_style_memory`, `observe_style_event`, and `get_style_brief`.
+  `hook` and `agent` (`full`/`event`/`off`) channels are reported at bootstrap/status time. Revision-aware capsule, delta, and ack responses
+  reduce repeated context injection.
+- **Bounded cleanup and upgrade** — expression patterns use 30/180/360-day candidate/active/archived TTLs, bounded capacities,
+  pinned protection, v1-to-v2 migration, versioned runtime installation, host-config backups, atomic switching, handshake verification,
+  lock handling, fault-injection rollback, and stale-lock recovery.
+
+### Changed
+
+- Daily integrations should call `observe_style_event` according to the returned channel and policy. The old
+  `observe_user_message` entry remains available only in the admin toolset for compatibility.
+- Long-chat refresh is revision/event driven; a fallback refresh is not earlier than 30 user turns. The old 12–20-turn recommendation is superseded.
+- `distill_recent_style` no longer accepts 3–8 items or activates them immediately. It accepts at most three candidates, once per candidate,
+  and cannot bypass the normal activation gate.
+- Brief and runtime token reporting must count schemas, call arguments, returns, capsule persistence, and deltas. This release does not claim
+  model-token measurements when a target tokenizer or real API usage is unavailable; see `docs/V0.5.0-TOKEN-REPORT.zh-CN.md`.
+
+### Compatibility
+
+- Existing v1 stores are migrated with a backup and atomic replacement; old compatibility habit projections remain readable.
+- Existing host configurations are changed only when explicit paths are supplied to the installer. No host path or real installation is guessed.
+
 ## [0.4.0] — 2026-06-27
 
 ### Added

@@ -1,111 +1,97 @@
-import type { InteractionPreference, StyleHabit, StyleStore } from "./types.js";
-import { daysBetween } from "./store.js";
+import type { ExpressionPattern, StyleStore } from "./types.js";
+import {
+  MAX_EXPRESSION_ACTIVE,
+  MAX_EXPRESSION_ARCHIVED,
+  MAX_EXPRESSION_CANDIDATE,
+  daysBetween,
+} from "./store.js";
 
 export interface CleanupResult {
   archived: number;
   deleted: number;
+  capacity?: string[];
 }
 
-/**
- * Clean up expired habits from the store.
- * Mutates `store.habits` in place.
- *
- * Lifecycle:
- *   candidate + inactive > candidateTtlDays        → deleted
- *   active   + inactive > inactiveTtlDays          → archived
- *   archived + inactive > inactiveTtlDays * 2      → deleted
- *   active   + inactive > inactiveTtlDays * 3      → deleted (skip archive)
- *   pinned   (any status)                          → never touched
- */
+/** Deterministic TTL cleanup. Addresses, failure rules and explicit preferences are never touched. */
 export function cleanupStore(store: StyleStore, now = new Date()): CleanupResult {
   let archived = 0;
   let deleted = 0;
+  const capacity: string[] = [];
 
-  const kept: StyleHabit[] = [];
-  for (const habit of store.habits) {
-    // Pinned habits bypass all cleanup — user explicitly wants to keep them
-    if (habit.pinned) {
-      kept.push(habit);
-      continue;
-    }
+  const patterns = cleanupExpressions(store.profile.expressionPatterns, store, () => archived++, () => deleted++, now);
+  store.profile.expressionPatterns = enforceExpressionCapacity(patterns, capacity);
 
-    const inactiveDays = daysBetween(new Date(habit.lastSeenAt), now);
-
-    if (habit.status === "candidate" && inactiveDays > store.settings.candidateTtlDays) {
-      deleted++;
-      continue;
-    }
-
-    if (habit.status === "archived" && inactiveDays > store.settings.inactiveTtlDays * 2) {
-      deleted++;
-      continue;
-    }
-
-    if (habit.status === "active" && inactiveDays > store.settings.inactiveTtlDays * 3) {
-      deleted++;
-      continue;
-    }
-
-    if (habit.status === "active" && inactiveDays > store.settings.inactiveTtlDays) {
-      habit.status = "archived";
-      habit.confidence = Math.min(habit.confidence, 0.25);
-      archived++;
-    }
-
-    kept.push(habit);
+  if (archived > 0 || deleted > 0 || capacity.length > 0) {
+    store.lastCleanupAt = now.toISOString();
   }
-
-  store.habits = kept;
-  store.profile.preferences = cleanupItems(
-    store.profile.preferences,
-    store,
-    () => archived++,
-    () => deleted++,
-    now,
-  );
-  store.lastCleanupAt = now.toISOString();
-  return { archived, deleted };
+  return { archived, deleted, capacity: capacity.length ? capacity : undefined };
 }
 
-function cleanupItems<T extends StyleHabit | InteractionPreference>(
-  items: T[],
+function cleanupExpressions(
+  items: ExpressionPattern[],
   store: StyleStore,
   onArchived: () => void,
   onDeleted: () => void,
-  now = new Date(),
-): T[] {
-  const kept: T[] = [];
+  now: Date,
+): ExpressionPattern[] {
+  const kept: ExpressionPattern[] = [];
   for (const item of items) {
     if (item.pinned) {
       kept.push(item);
       continue;
     }
-
     const inactiveDays = daysBetween(new Date(item.lastSeenAt), now);
-
-    if (item.status === "candidate" && inactiveDays > store.settings.candidateTtlDays) {
+    if (item.status === "candidate" && inactiveDays >= store.settings.candidateTtlDays) {
       onDeleted();
       continue;
     }
-
-    if (item.status === "archived" && inactiveDays > store.settings.inactiveTtlDays * 2) {
-      onDeleted();
-      continue;
-    }
-
-    if (item.status === "active" && inactiveDays > store.settings.inactiveTtlDays * 3) {
-      onDeleted();
-      continue;
-    }
-
-    if (item.status === "active" && inactiveDays > store.settings.inactiveTtlDays) {
+    if (item.status === "active" && inactiveDays >= store.settings.inactiveTtlDays) {
       item.status = "archived";
+      item.archivedAt = now.toISOString();
+      item.evidence.lastArchivedAt = item.archivedAt;
       item.confidence = Math.min(item.confidence, 0.25);
       onArchived();
+      kept.push(item);
+      continue;
     }
-
+    if (item.status === "archived" && inactiveDays >= store.settings.inactiveTtlDays * 2) {
+      onDeleted();
+      continue;
+    }
     kept.push(item);
   }
-
   return kept;
+}
+
+function enforceExpressionCapacity(items: ExpressionPattern[], capacity: string[]): ExpressionPattern[] {
+  const limits: Record<ExpressionPattern["status"], number> = {
+    active: MAX_EXPRESSION_ACTIVE,
+    candidate: MAX_EXPRESSION_CANDIDATE,
+    archived: MAX_EXPRESSION_ARCHIVED,
+  };
+  const kept: ExpressionPattern[] = [];
+  for (const status of ["active", "candidate", "archived"] as const) {
+    const group = items.filter((item) => item.status === status);
+    const protectedItems = group.filter((item) => item.pinned || item.explicit);
+    const unprotectedItems = group.filter((item) => !item.pinned && !item.explicit);
+    const available = Math.max(0, limits[status] - protectedItems.length);
+    const sorted = protectedItems.length >= limits[status]
+      ? protectedItems
+      : [...protectedItems, ...unprotectedItems.sort(compareProtected).slice(0, available)];
+    if (sorted.length < group.length) capacity.push(`expression_${status}_capacity`);
+    if (protectedItems.length >= limits[status] && unprotectedItems.length > 0) {
+      capacity.push(`expression_${status}_protected_full`);
+    }
+    kept.push(...sorted);
+  }
+  return kept.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function compareProtected(a: ExpressionPattern, b: ExpressionPattern): number {
+  return Number(b.pinned) - Number(a.pinned)
+    || Number(b.explicit) - Number(a.explicit)
+    || b.sessionCount - a.sessionCount
+    || b.seenCount - a.seenCount
+    || b.lastSeenAt.localeCompare(a.lastSeenAt)
+    || a.id.localeCompare(b.id);
 }

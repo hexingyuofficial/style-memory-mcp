@@ -18,6 +18,10 @@ Contributions are welcome and appreciated ✨
 - Run `npm run check && npm test` before pushing.
 - Keep the dictionary additions pattern-consistent with existing entries.
 - Dialect / slang entries must carry `useWhen` and `avoidWhen` context labels.
+- Work targeting `v0.5.0` must satisfy the corresponding experiment and pass
+  criteria in
+  [`docs/V0.5.0-HARDENING-PLAN.zh-CN.md`](docs/V0.5.0-HARDENING-PLAN.zh-CN.md).
+  Do not weaken or skip an experiment to make a fix pass.
 
 ## Setup
 

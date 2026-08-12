@@ -1,7 +1,9 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 
-import { defaultSettings, makeId, makeProfileId, normalizeStore } from "./store.js";
+import { defaultSettings, loadStore, makeId, makeProfileId, normalizeStore } from "./store.js";
 
 let savedMinPromoteCount: string | undefined;
 let savedMaxBriefItems: string | undefined;
@@ -54,7 +56,7 @@ describe("defaultSettings", () => {
     process.env.STYLE_MEMORY_MAX_BRIEF_ITEMS = "0";
 
     const settings = defaultSettings("/tmp/style-memory-test.json");
-    assert.equal(settings.minPromoteCount, 3);
+    assert.equal(settings.minPromoteCount, 2);
     assert.equal(settings.maxBriefItems, 8);
   });
 
@@ -140,9 +142,79 @@ describe("normalizeStore", () => {
     );
 
     assert.equal(store.settings.dataPath, "/tmp/style-memory-test.json");
-    assert.equal(store.settings.minPromoteCount, 3);
+    assert.equal(store.settings.minPromoteCount, 2);
     assert.equal(store.settings.maxBriefItems, 12);
     assert.equal(store.settings.allowLearning, false);
+  });
+
+  it("migrates the old default promotion threshold while honoring an explicit env override", () => {
+    const legacy = normalizeStore({
+      version: 1,
+      settings: { minPromoteCount: 3 },
+      habits: [],
+    }, "/tmp/style-memory-v1-threshold.json");
+    assert.equal(legacy.settings.minPromoteCount, 2);
+
+    process.env.STYLE_MEMORY_MIN_PROMOTE_COUNT = "4";
+    const overridden = normalizeStore({
+      version: 2,
+      settings: { minPromoteCount: 3 },
+      habits: [],
+      profile: {},
+      evidenceState: {},
+      briefState: {},
+    }, "/tmp/style-memory-v2-threshold.json");
+    assert.equal(overridden.settings.minPromoteCount, 4);
+  });
+
+  it("accepts a v2 store whose legacy habits projection is absent", () => {
+    const store = normalizeStore({
+      version: 2,
+      settings: {},
+      profile: {},
+      evidenceState: {},
+      briefState: { revision: 4 },
+    }, "/tmp/style-memory-v2-missing-habits.json");
+    assert.equal(store.version, 2);
+    assert.deepEqual(store.habits, []);
+    assert.equal(store.briefState.revision, 4);
+    assert.equal(store.initialization.status, "pending");
+  });
+
+  it("treats a populated v0.5 store as already initialized", () => {
+    const store = normalizeStore({
+      version: 2,
+      settings: {},
+      habits: [],
+      profile: {
+        preferences: [{
+          category: "workflow",
+          text: "prefers implementation followed by verification",
+          status: "active",
+          useWhen: ["technical_chat"],
+          avoidWhen: [],
+        }],
+      },
+      evidenceState: {},
+      briefState: { revision: 2 },
+    }, "/tmp/style-memory-v05-populated.json");
+
+    assert.equal(store.initialization.status, "completed");
+  });
+
+  it("backs up a structurally corrupt file before returning a fresh store", async () => {
+    const dir = `/tmp/style-memory-structure-${randomUUID()}`;
+    const file = `${dir}/store.json`;
+    try {
+      await mkdir(dir, { recursive: true });
+      await writeFile(file, "[]", "utf8");
+      const store = await loadStore(file);
+      assert.equal(store.version, 2);
+      const names = await readdir(dir);
+      assert.ok(names.some((name) => name.startsWith("store.json.corrupt-")));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

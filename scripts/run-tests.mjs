@@ -5,10 +5,13 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const root = process.cwd();
-const tests = findTests(join(root, "src"));
+const tests = [
+  ...findTests(join(root, "src"), (name) => name.endsWith(".test.ts")),
+  ...findTests(join(root, "scripts"), (name) => name.endsWith(".test.mjs")),
+];
 
 if (tests.length === 0) {
-  console.error("No test files found under src/**/*.test.ts");
+  console.error("No test files found under src/**/*.test.ts or scripts/**/*.test.mjs");
   process.exit(1);
 }
 
@@ -20,15 +23,15 @@ const result = spawnSync(
 
 process.exit(result.status ?? 1);
 
-function findTests(dir) {
+function findTests(dir, matches) {
   const entries = readdirSync(dir, { withFileTypes: true });
   const files = [];
 
   for (const entry of entries) {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) {
-      files.push(...findTests(path));
-    } else if (entry.isFile() && entry.name.endsWith(".test.ts")) {
+      files.push(...findTests(path, matches));
+    } else if (entry.isFile() && matches(entry.name)) {
       files.push(path);
     }
   }

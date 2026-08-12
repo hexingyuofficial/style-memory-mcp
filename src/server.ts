@@ -4,421 +4,372 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import {
+  addFailureRule,
+  archiveAddress,
+  bootstrapStyleMemory,
+  confirmAddress,
   distillInteractionProfile,
   distillRecentStyle,
+  forgetAddress,
+  forgetFailureRule,
   forgetInteractionPreference,
   forgetStyleHabit,
   getStyleBrief,
+  getStyleBriefEnvelope,
   getStyleBriefStructured,
   getStyleMemoryScore,
+  listAddresses,
+  listFailureRules,
   listInteractionProfile,
   listStyleHabits,
   observeUserMessage,
+  pinAddress,
   pinInteractionPreference,
   pinStyleHabit,
   reviewInteractionProfile,
   reviewStyleHabits,
 } from "./memory.js";
+import type { AddressDirection, AgentObservationPolicy, InitializationInput, ObservationChannel } from "./types.js";
 import { withStoreMutation } from "./store.js";
+
+const SERVER_VERSION = "0.6.0";
+const RUNTIME_TOOLS = ["bootstrap_style_memory", "observe_style_event", "get_style_brief"] as const;
+const ENABLE_ADMIN = process.env.STYLE_MEMORY_TOOLSET === "admin"
+  || process.env.STYLE_MEMORY_ENABLE_ADMIN === "1";
 
 const server = new McpServer({
   name: "style-memory-mcp",
-  version: "0.4.0",
+  version: SERVER_VERSION,
 });
 
-/** Wrap a tool result in a safe MCP content response, catching errors. */
-function safeHandler<T>(
-  fn: () => Promise<T>,
-): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
-  return fn()
-    .then((value) => jsonResult(value))
-    .catch(errorResult);
+type TextResponse = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
+
+function safeHandler<T>(fn: () => Promise<T>): Promise<TextResponse> {
+  return fn().then((value) => jsonResult(value)).catch(errorResult);
 }
 
-/** Wrap a text-only tool result without JSON-stringifying it. */
-function safeTextHandler(
-  fn: () => Promise<string>,
-): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
-  return fn()
-    .then((text) => textResult(text))
-    .catch(errorResult);
+function safeTextHandler(fn: () => Promise<string>): Promise<TextResponse> {
+  return fn().then((value) => textResult(value)).catch(errorResult);
 }
 
-// Shared schema for a single host-LLM observation. Reused by both
-// `observe_user_message.hints` and `distill_recent_style.habits`.
 const HABIT_KIND = z.enum([
-  "catchphrase",
-  "dialect_marker",
-  "emoji",
-  "punctuation",
-  "tone",
-  "language_mix",
-  "sentence_final_particle",
-  "structure",
-  "idiolect",
+  "catchphrase", "dialect_marker", "emoji", "punctuation", "tone", "language_mix",
+  "sentence_final_particle", "structure", "idiolect",
 ]);
+const ADDRESS_DIRECTION = z.enum(["user→assistant", "assistant→user"]);
+const CHANNEL = z.enum(["hook", "agent"]);
+const POLICY = z.enum(["full", "event", "off"]);
 
 const HINT_SCHEMA = z.object({
-  kind: HABIT_KIND.describe(
-    "What kind of style signal you noticed. Use `idiolect` for one-off personal habits that don't fit elsewhere.",
-  ),
-  text: z
-    .string()
-    .min(1)
-    .max(40)
-    .describe("The marker itself, e.g. '莫', 'fr', or '(｡･ω･｡)'."),
-  locale: z.string().max(40).optional(),
-  example: z
-    .string()
-    .max(120)
-    .optional()
-    .describe(
-      "A short fragment from the user message showing how the marker is used. Server truncates to 60 chars and drops anything sensitive.",
-    ),
+  kind: HABIT_KIND,
+  text: z.string().min(1).max(40),
+  example: z.string().max(120).optional(),
   useWhen: z.array(z.string().max(40)).max(8).optional(),
   avoidWhen: z.array(z.string().max(40)).max(8).optional(),
-  notes: z.string().max(160).optional(),
-  confidence: z
-    .number()
-    .min(0)
-    .max(1)
-    .optional()
-    .describe("Your 0–1 certainty this is a real personal habit."),
+  behaviorSummary: z.string().max(160).optional(),
+  functions: z.array(z.string().max(32)).max(5).optional(),
+  variationPolicy: z.enum(["exact_only", "same_family", "open_variation"]).optional(),
+  sessionId: z.string().regex(/^[A-Za-z0-9_-]{1,24}$/).optional(),
+  sourceRole: z.enum(["user", "assistant", "system", "tool"]).optional(),
+  addressFrom: z.enum(["user", "assistant"]).optional(),
+  addressTo: z.enum(["user", "assistant"]).optional(),
+  affectSummary: z.string().max(48).optional(),
+  usageSummary: z.string().max(48).optional(),
 });
 
 const PROFILE_CATEGORY = z.enum([
-  "response_structure",
-  "collaboration",
-  "explanation",
-  "decision_making",
-  "workflow",
-  "tone_boundary",
+  "response_structure", "collaboration", "explanation", "decision_making", "workflow", "tone_boundary",
 ]);
-
 const PROFILE_HINT_SCHEMA = z.object({
-  category: PROFILE_CATEGORY.describe(
-    "Concrete collaboration preference category. Do not use personality or psychology labels.",
-  ),
-  text: z
-    .string()
-    .min(1)
-    .max(120)
-    .describe(
-      "Behavioral preference, e.g. 'prefers direct assessment before implementation'.",
-    ),
-  example: z
-    .string()
-    .max(120)
-    .optional()
-    .describe("Short fragment showing the preference, sanitized server-side."),
+  category: PROFILE_CATEGORY,
+  text: z.string().min(1).max(120),
+  example: z.string().max(120).optional(),
   useWhen: z.array(z.string().max(40)).max(8).optional(),
   avoidWhen: z.array(z.string().max(40)).max(8).optional(),
   notes: z.string().max(160).optional(),
   confidence: z.number().min(0).max(1).optional(),
+  sessionId: z.string().regex(/^[A-Za-z0-9_-]{1,24}$/).optional(),
+  explicit: z.boolean().optional(),
+  preferenceField: z.enum(["replyVerbosity", "warmth", "initiative"]).optional(),
+  value: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).optional(),
 });
+const ADDRESS_HINT_SCHEMA = z.object({
+  text: z.string().min(1).max(48),
+  from: z.enum(["user", "assistant"]),
+  to: z.enum(["user", "assistant"]),
+  sourceRole: z.literal("user"),
+  currentMessage: z.string().min(1).max(4000),
+  usageSummary: z.string().max(48).optional(),
+  affectSummary: z.string().max(48).optional(),
+  useWhen: z.array(z.string().max(24)).max(3).optional(),
+  explicit: z.boolean().optional(),
+  sessionId: z.string().regex(/^[A-Za-z0-9_-]{1,24}$/).optional(),
+});
+const FEEDBACK_SCHEMA = z.object({
+  kind: z.enum(["address", "expression", "response_preference", "failure"]),
+  action: z.enum(["confirm", "correct", "forget", "pin", "archive", "set"]),
+  idOrText: z.string().max(160).optional(),
+  direction: ADDRESS_DIRECTION.optional(),
+  text: z.string().max(160).optional(),
+  rule: z.string().max(160).optional(),
+  field: z.string().max(40).optional(),
+  value: z.number().int().min(1).max(5).optional(),
+});
+const INITIALIZATION_EXPRESSION_SCHEMA = z.object({
+  kind: HABIT_KIND,
+  text: z.string().min(1).max(40),
+  example: z.string().max(120).optional(),
+  useWhen: z.array(z.string().max(40)).max(8).optional(),
+  avoidWhen: z.array(z.string().max(40)).max(8).optional(),
+  behaviorSummary: z.string().min(1).max(160),
+  functions: z.array(z.string().min(1).max(32)).min(1).max(5),
+  variationPolicy: z.enum(["exact_only", "same_family", "open_variation"]),
+  confidence: z.number().min(0).max(1).optional(),
+}).strict();
+const INITIALIZATION_PROFILE_SCHEMA = z.object({
+  category: PROFILE_CATEGORY,
+  text: z.string().min(1).max(120),
+  useWhen: z.array(z.string().max(40)).max(8).optional(),
+  avoidWhen: z.array(z.string().max(40)).max(8).optional(),
+  notes: z.string().max(160).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+}).strict();
+const INITIALIZATION_SCHEMA = z.object({
+  action: z.enum(["complete", "skip"]),
+  lookbackDays: z.number().int().min(1).max(30).optional(),
+  sessionCount: z.number().int().min(1).max(12).optional(),
+  observedVoice: z.object({
+    verbosity: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).optional(),
+    formality: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).optional(),
+    expressiveness: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]).optional(),
+    rhythm: z.string().max(80).optional(),
+    expressionDensity: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
+    punctuation: z.object({
+      baseStyle: z.enum(["minimal", "standard", "expressive", "ellipses"]).optional(),
+      literalPatterns: z.array(z.string().min(1).max(12)).max(3).optional(),
+    }).strict().optional(),
+  }).strict().optional(),
+  responsePreferences: z.array(z.object({
+    field: z.enum(["replyVerbosity", "warmth", "initiative"]),
+    value: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]),
+    evidence: z.literal("explicit_feedback"),
+  }).strict()).max(3).optional(),
+  profileHints: z.array(INITIALIZATION_PROFILE_SCHEMA).max(6).optional(),
+  expressionHints: z.array(INITIALIZATION_EXPRESSION_SCHEMA).max(3).optional(),
+}).strict();
+
+const OBSERVE_SCHEMA = {
+  text: z.string().min(1).max(4000),
+  context: z.string().max(80).optional(),
+  sessionId: z.string().regex(/^[A-Za-z0-9_-]{1,24}$/).optional(),
+  channel: CHANNEL.optional(),
+  policy: POLICY.optional(),
+  hints: z.array(HINT_SCHEMA).max(8).optional(),
+  profileHints: z.array(PROFILE_HINT_SCHEMA).max(6).optional(),
+  addressHints: z.array(ADDRESS_HINT_SCHEMA).max(6).optional(),
+  feedback: FEEDBACK_SCHEMA.optional(),
+};
 
 server.registerTool(
-  "observe_user_message",
+  "bootstrap_style_memory",
   {
-    title: "Observe user message",
-    description:
-      "Learn lightweight conversational style signals from the latest user message. " +
-      "Pass only the message text — not secrets, private memories, or full conversation logs. " +
-      "Optionally include `hints`: things YOU (the host LLM) noticed that the built-in dictionary " +
-      "wouldn't catch, such as a self-invented sentence-final particle or a unique structural quirk.",
+    title: "Bootstrap style memory",
+    description: "Start a session and return the compact style capsule. On a fresh store it requests one-time initialization from sanitized host-local session aggregates.",
     inputSchema: {
-      text: z.string().min(1).max(4000).describe("The latest user message only."),
-      context: z
-        .string()
-        .max(80)
-        .optional()
-        .describe("Short context label, such as casual_chat, technical_chat, or formal_writing."),
-      hints: z
-        .array(HINT_SCHEMA)
-        .max(8)
-        .optional()
-        .describe(
-          "Up to 8 personal style observations from this message. Only include things the user " +
-            "actually said that look like a signature habit — if unsure, omit. Three repetitions " +
-            "are required before a habit is treated as stable, so you don't need to be right on " +
-            "the first try.",
-        ),
-      profileHints: z
-        .array(PROFILE_HINT_SCHEMA)
-        .max(6)
-        .optional()
-        .describe(
-          "Up to 6 concrete collaboration or response-structure preferences. " +
-            "Do not submit personality labels, diagnoses, private facts, or psychological guesses.",
-        ),
+      channel: CHANNEL.optional(),
+      policy: POLICY.optional(),
+      sessionId: z.string().regex(/^[A-Za-z0-9_-]{1,24}$/).optional(),
+      initialization: INITIALIZATION_SCHEMA.optional(),
     },
   },
-  async ({ text, context, hints, profileHints }) =>
-    safeHandler(() => observeUserMessage(text, context, hints, profileHints)),
+  async ({ channel, policy, sessionId, initialization }) =>
+    safeHandler(() => bootstrapStyleMemory(
+      channel as ObservationChannel | undefined,
+      policy as AgentObservationPolicy | undefined,
+      sessionId,
+      initialization as InitializationInput | undefined,
+    )),
+);
+
+server.registerTool(
+  "observe_style_event",
+  {
+    title: "Observe style event",
+    description: "Submit only the latest user message and compact semantic hints; normal success returns an ack, not the store.",
+    inputSchema: OBSERVE_SCHEMA,
+  },
+  async ({ text, context, sessionId, channel, policy, hints, profileHints, addressHints, feedback }) =>
+    safeHandler(async () => {
+      const result = await observeUserMessage(text, context, hints, profileHints, {
+        sessionId,
+        channel,
+        policy,
+        addressHints,
+        feedback,
+      });
+      return result.ack ?? { ok: 1, refresh: 0, revision: 0, channel: channel ?? "agent", policy: policy ?? "event" };
+    }),
 );
 
 server.registerTool(
   "get_style_brief",
   {
     title: "Get style brief",
-    description:
-      "Return a short text style brief for the agent to use lightly. Call this at the start of a conversation or before drafting a friendly reply.",
+    description: "Return a capsule on first use, a compact delta after a revision change, or an ack when unchanged.",
     inputSchema: {
-      context: z
-        .string()
-        .max(80)
-        .optional()
-        .describe("Short context label. Habits with matching avoidWhen will be omitted."),
+      context: z.string().max(80).optional(),
+      knownRevision: z.number().int().min(0).optional(),
     },
   },
-  async ({ context }) => safeTextHandler(() => getStyleBrief(context)),
+  async ({ context, knownRevision }) => safeHandler(() => getStyleBriefEnvelope(context, knownRevision)),
 );
 
-server.registerTool(
-  "get_style_brief_structured",
-  {
-    title: "Get structured style brief",
-    description:
-      "Return the style brief plus structured habits, interaction profile items, and an optional profileNudge for agents that can consume JSON.",
-    inputSchema: {
-      context: z
-        .string()
-        .max(80)
-        .optional()
-        .describe("Short context label. Habits with matching avoidWhen will be omitted."),
+if (ENABLE_ADMIN) registerAdminTools();
+
+function registerAdminTools() {
+  server.registerTool(
+    "observe_user_message",
+    {
+      title: "Observe user message (admin)",
+      description: "Compatibility/admin form of observe_style_event; returns the complete observation result.",
+      inputSchema: OBSERVE_SCHEMA,
     },
-  },
-  async ({ context }) => safeHandler(() => getStyleBriefStructured(context)),
-);
-
-server.registerTool(
-  "distill_recent_style",
-  {
-    title: "Distill recent style",
-    description:
-      "One-shot batched distillation: based on the user's recent ~10–20 messages, identify 3–7 " +
-      "signature expressions (catchphrases, sentence-final particles, structural quirks, etc.) " +
-      "and write them all at once. Treated as user-endorsed — each habit becomes active " +
-      "immediately if its content passes basic checks. Use sparingly: at conversation seed-time, " +
-      "or when the agent feels its style brief is too thin.",
-    inputSchema: {
-      habits: z
-        .array(HINT_SCHEMA)
-        .min(1)
-        .max(8)
-        .describe("3–7 high-conviction observations distilled from recent conversation."),
+    async ({ text, context, sessionId, channel, policy, hints, profileHints, addressHints, feedback }) =>
+      safeHandler(() => observeUserMessage(text, context, hints, profileHints, { sessionId, channel, policy, addressHints, feedback })),
+  );
+  server.registerTool(
+    "get_style_brief_structured",
+    {
+      title: "Get structured style brief",
+      description: "Return full structured memory for administration and diagnostics.",
+      inputSchema: { context: z.string().max(80).optional(), knownRevision: z.number().int().min(0).optional() },
     },
-  },
-  async ({ habits }) => safeHandler(() => distillRecentStyle(habits)),
-);
-
-server.registerTool(
-  "distill_interaction_profile",
-  {
-    title: "Distill interaction profile",
-    description:
-      "One-shot batched distillation of concrete collaboration preferences. " +
-      "Use for response structure, explanation style, workflow, and decision-making preferences — not personality labels.",
-    inputSchema: {
-      preferences: z
-        .array(PROFILE_HINT_SCHEMA)
-        .min(1)
-        .max(8)
-        .describe("High-conviction behavioral collaboration preferences."),
+    async ({ context, knownRevision }) => safeHandler(() => getStyleBriefStructured(context, knownRevision)),
+  );
+  server.registerTool(
+    "distill_recent_style",
+    {
+      title: "Distill recent style",
+      description: "Admin-only session-end path for up to three low-weight qualitative candidates; it does not bypass activation gates.",
+      inputSchema: { habits: z.array(HINT_SCHEMA).min(1).max(3) },
     },
-  },
-  async ({ preferences }) => safeHandler(() => distillInteractionProfile(preferences)),
-);
-
-server.registerTool(
-  "list_style_habits",
-  {
-    title: "List style habits",
-    description: "List stored style habits and candidates from the local JSON store.",
-    inputSchema: {},
-  },
-  async () => safeHandler(async () => ({ habits: await listStyleHabits() })),
-);
-
-server.registerTool(
-  "list_interaction_profile",
-  {
-    title: "List interaction profile",
-    description:
-      "List stored collaboration and response-structure preferences from the local JSON store.",
-    inputSchema: {},
-  },
-  async () => safeHandler(async () => ({ preferences: await listInteractionProfile() })),
-);
-
-server.registerTool(
-  "review_style_habits",
-  {
-    title: "Review style habits",
-    description:
-      "Return a concise review queue with suggested actions such as keep, pin, forget, or observe.",
-    inputSchema: {
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(50)
-        .default(12)
-        .describe("Maximum number of habits to include in the review queue."),
+    async ({ habits }) => safeHandler(() => distillRecentStyle(habits)),
+  );
+  server.registerTool(
+    "distill_interaction_profile",
+    {
+      title: "Distill interaction profile",
+      description: "Write concrete collaboration preferences after explicit review.",
+      inputSchema: { preferences: z.array(PROFILE_HINT_SCHEMA).min(1).max(8) },
     },
-  },
-  async ({ limit }) => safeHandler(() => reviewStyleHabits(limit)),
-);
-
-server.registerTool(
-  "review_interaction_profile",
-  {
-    title: "Review interaction profile",
-    description:
-      "Return a concise review queue for stored collaboration preferences, with suggested actions such as keep, pin, forget, or observe.",
-    inputSchema: {
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(50)
-        .default(12)
-        .describe("Maximum number of profile preferences to include in the review queue."),
-    },
-  },
-  async ({ limit }) => safeHandler(() => reviewInteractionProfile(limit)),
-);
-
-server.registerTool(
-  "forget_style_habit",
-  {
-    title: "Forget style habit",
-    description: "Delete a style habit by id or exact text.",
-    inputSchema: {
-      idOrText: z.string().min(1).describe("Habit id or exact habit text."),
-    },
-  },
-  async ({ idOrText }) =>
-    safeHandler(async () => ({ removed: await forgetStyleHabit(idOrText) })),
-);
-
-server.registerTool(
-  "forget_interaction_preference",
-  {
-    title: "Forget interaction preference",
-    description: "Delete a collaboration preference by id or exact text.",
-    inputSchema: {
-      idOrText: z.string().min(1).describe("Preference id or exact preference text."),
-    },
-  },
-  async ({ idOrText }) =>
-    safeHandler(async () => ({ removed: await forgetInteractionPreference(idOrText) })),
-);
-
-server.registerTool(
-  "pin_style_habit",
-  {
-    title: "Pin style habit",
-    description: "Pin or unpin a style habit so cleanup will not delete it.",
-    inputSchema: {
-      idOrText: z.string().min(1).describe("Habit id or exact habit text."),
-      pinned: z.boolean().default(true).describe("Whether the habit should be pinned."),
-    },
-  },
-  async ({ idOrText, pinned }) =>
-    safeHandler(async () => ({ updated: await pinStyleHabit(idOrText, pinned) })),
-);
-
-server.registerTool(
-  "pin_interaction_preference",
-  {
-    title: "Pin interaction preference",
-    description: "Pin or unpin a collaboration preference so cleanup will not delete it.",
-    inputSchema: {
-      idOrText: z.string().min(1).describe("Preference id or exact preference text."),
-      pinned: z.boolean().default(true).describe("Whether the preference should be pinned."),
-    },
-  },
-  async ({ idOrText, pinned }) =>
-    safeHandler(async () => ({ updated: await pinInteractionPreference(idOrText, pinned) })),
-);
-
-server.registerTool(
-  "set_learning_enabled",
-  {
-    title: "Set learning enabled",
-    description: "Enable or disable style learning in the local JSON store.",
-    inputSchema: {
-      enabled: z.boolean().describe("Set false to stop learning new style signals."),
-    },
-  },
-  async ({ enabled }) =>
-    safeHandler(async () => {
-      return withStoreMutation((store) => {
-        store.settings.allowLearning = enabled;
-        return { allowLearning: enabled };
-      });
+    async ({ preferences }) => safeHandler(() => distillInteractionProfile(preferences)),
+  );
+  server.registerTool("list_style_habits", { title: "List style habits", description: "List compatibility habits.", inputSchema: {} }, async () => safeHandler(async () => ({ habits: await listStyleHabits() })));
+  server.registerTool("list_interaction_profile", { title: "List interaction profile", description: "List collaboration preferences.", inputSchema: {} }, async () => safeHandler(async () => ({ preferences: await listInteractionProfile() })));
+  server.registerTool(
+    "review_style_habits",
+    { title: "Review style habits", description: "Return a review queue.", inputSchema: { limit: z.number().int().min(1).max(50).default(12) } },
+    async ({ limit }) => safeHandler(() => reviewStyleHabits(limit)),
+  );
+  server.registerTool(
+    "review_interaction_profile",
+    { title: "Review interaction profile", description: "Return a profile review queue.", inputSchema: { limit: z.number().int().min(1).max(50).default(12) } },
+    async ({ limit }) => safeHandler(() => reviewInteractionProfile(limit)),
+  );
+  server.registerTool(
+    "forget_style_habit",
+    { title: "Forget style habit", description: "Delete a compatibility habit.", inputSchema: { idOrText: z.string().min(1) } },
+    async ({ idOrText }) => safeHandler(async () => ({ removed: await forgetStyleHabit(idOrText) })),
+  );
+  server.registerTool(
+    "forget_interaction_preference",
+    { title: "Forget interaction preference", description: "Delete a collaboration preference.", inputSchema: { idOrText: z.string().min(1) } },
+    async ({ idOrText }) => safeHandler(async () => ({ removed: await forgetInteractionPreference(idOrText) })),
+  );
+  server.registerTool(
+    "pin_style_habit",
+    { title: "Pin style habit", description: "Pin or unpin a compatibility habit.", inputSchema: { idOrText: z.string().min(1), pinned: z.boolean().default(true) } },
+    async ({ idOrText, pinned }) => safeHandler(async () => ({ updated: await pinStyleHabit(idOrText, pinned) })),
+  );
+  server.registerTool(
+    "pin_interaction_preference",
+    { title: "Pin interaction preference", description: "Pin or unpin a preference.", inputSchema: { idOrText: z.string().min(1), pinned: z.boolean().default(true) } },
+    async ({ idOrText, pinned }) => safeHandler(async () => ({ updated: await pinInteractionPreference(idOrText, pinned) })),
+  );
+  server.registerTool(
+    "set_learning_enabled",
+    { title: "Set learning enabled", description: "Enable or disable learning.", inputSchema: { enabled: z.boolean() } },
+    async ({ enabled }) => safeHandler(async () => withStoreMutation((store) => { store.settings.allowLearning = enabled; return { allowLearning: enabled }; })),
+  );
+  server.registerTool("get_style_memory_score", { title: "Get style memory score", description: "Score memory quality.", inputSchema: {} }, async () => safeHandler(() => getStyleMemoryScore()));
+  server.registerTool(
+    "get_style_memory_status",
+    { title: "Get style memory status", description: "Return a machine-readable runtime/store handshake and memory counts.", inputSchema: {} },
+    async () => safeHandler(async () => withStoreMutation((store) => ({
+      serverVersion: SERVER_VERSION,
+      storeVersion: store.version,
+      runtimePath: process.env.STYLE_MEMORY_RUNTIME_PATH ?? process.argv[1] ?? "",
+      dataPath: store.settings.dataPath,
+      channel: store.settings.observationChannel,
+      policy: store.settings.agentPolicy,
+      runtimeTools: [...RUNTIME_TOOLS],
+      adminEnabled: ENABLE_ADMIN,
+      allowLearning: store.settings.allowLearning,
+      habits: store.habits.length,
+      active: store.habits.filter((habit) => habit.status === "active").length,
+      candidates: store.habits.filter((habit) => habit.status === "candidate").length,
+      archived: store.habits.filter((habit) => habit.status === "archived").length,
+      expressionPatterns: store.profile.expressionPatterns.length,
+      activeExpressionPatterns: store.profile.expressionPatterns.filter((item) => item.status === "active").length,
+      profilePreferences: store.profile.preferences.length,
+      activeProfilePreferences: store.profile.preferences.filter((item) => item.status === "active").length,
+      lastCleanupAt: store.lastCleanupAt,
+    }))),
+  );
+  server.registerTool(
+    "list_addresses",
+    { title: "List addresses", description: "List direction-scoped address memory.", inputSchema: { direction: ADDRESS_DIRECTION.optional() } },
+    async ({ direction }) => safeHandler(() => listAddresses(direction as AddressDirection | undefined)),
+  );
+  server.registerTool(
+    "manage_address",
+    { title: "Manage address", description: "Confirm, forget, pin, or archive one direction-scoped address.", inputSchema: { direction: ADDRESS_DIRECTION, idOrText: z.string().min(1), action: z.enum(["confirm", "forget", "pin", "unpin", "archive"]) } },
+    async ({ direction, idOrText, action }) => safeHandler(async () => {
+      if (action === "confirm") return { updated: await confirmAddress(direction, idOrText) };
+      if (action === "forget") return { updated: await forgetAddress(direction, idOrText) };
+      if (action === "pin" || action === "unpin") return { updated: await pinAddress(direction, idOrText, action === "pin") };
+      return { updated: await archiveAddress(direction, idOrText) };
     }),
-);
+  );
+  server.registerTool(
+    "list_failure_rules",
+    { title: "List failure rules", description: "List explicit do-not-repeat rules.", inputSchema: {} },
+    async () => safeHandler(async () => ({ rules: await listFailureRules() })),
+  );
+  server.registerTool(
+    "add_failure_rule",
+    { title: "Add failure rule", description: "Record an explicit correction rule.", inputSchema: { rule: z.string().min(1).max(160) } },
+    async ({ rule }) => safeHandler(async () => ({ rule: await addFailureRule(rule) })),
+  );
+  server.registerTool(
+    "forget_failure_rule",
+    { title: "Forget failure rule", description: "Delete an explicit correction rule.", inputSchema: { idOrText: z.string().min(1) } },
+    async ({ idOrText }) => safeHandler(async () => ({ removed: await forgetFailureRule(idOrText) })),
+  );
+}
 
-server.registerTool(
-  "get_style_memory_score",
-  {
-    title: "Get style memory score",
-    description:
-      "Score whether the local style memory is usable, stable, fresh, and at risk of drift or over-imitation.",
-    inputSchema: {},
-  },
-  async () => safeHandler(() => getStyleMemoryScore()),
-);
-
-server.registerTool(
-  "get_style_memory_status",
-  {
-    title: "Get style memory status",
-    description: "Show where the local JSON store lives and how many habits are stored.",
-    inputSchema: {},
-  },
-  async () =>
-    safeHandler(async () => {
-      return withStoreMutation((store) => ({
-        dataPath: store.settings.dataPath,
-        allowLearning: store.settings.allowLearning,
-        habits: store.habits.length,
-        active: store.habits.filter((habit) => habit.status === "active").length,
-        candidates: store.habits.filter((habit) => habit.status === "candidate").length,
-        archived: store.habits.filter((habit) => habit.status === "archived").length,
-        profilePreferences: store.profile.preferences.length,
-        activeProfilePreferences: store.profile.preferences.filter(
-          (preference) => preference.status === "active",
-        ).length,
-        lastCleanupAt: store.lastCleanupAt,
-      }));
-    }),
-);
-
-function jsonResult(value: unknown) {
+function jsonResult(value: unknown): TextResponse {
   return textResult(JSON.stringify(value, null, 2));
 }
 
-function textResult(text: string) {
-  return {
-    content: [
-      {
-        type: "text" as const,
-        text,
-      },
-    ],
-  };
+function textResult(text: string): TextResponse {
+  return { content: [{ type: "text", text }] };
 }
 
-function errorResult(error: unknown) {
+function errorResult(error: unknown): TextResponse {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`[style-memory-mcp] Tool error:`, message);
-  return {
-    content: [{ type: "text" as const, text: `Error: ${message}` }],
-    isError: true,
-  };
+  console.error("[style-memory-mcp] Tool error:", message);
+  return { content: [{ type: "text", text: `Error: ${message}` }], isError: true };
 }
 
 const transport = new StdioServerTransport();

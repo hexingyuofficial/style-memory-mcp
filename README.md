@@ -32,9 +32,8 @@ Small thing. Big vibe. ✨
   via `hints` — see [LLM-assisted learning](#llm-assisted-learning) below.
 - No full conversation log storage — only style signals (and a short
   ≤60-char usage example per habit, sanitized before storage)
-- Learns candidates first, promotes repeated habits later
-- Promotion now also requires the habit to appear under **≥2 distinct
-  context labels** (cross-context check, inspired by nuwa-skill)
+- Learns candidates first; semantic expression patterns need at least 2
+  observations across 2 independent sessions before automatic activation
 - Auto-cleans stale habits (candidate → archived → deleted)
 - Supports English slang, emoji, multilingual markers, and text emoticons — plus
   free-form `idiolect` for whatever the host LLM notices
@@ -54,6 +53,11 @@ Small thing. Big vibe. ✨
 - Works with any MCP-capable agent that calls the tools
 - Pin habits to protect them from auto-cleanup
 - Pause learning anytime with `set_learning_enabled`
+- v2 produces a six-section brief: address, core voice, expression patterns,
+  punctuation/emoji, companion preferences, and failure log
+- Separates model-external `hook` observation from `agent` `full`/`event`/`off`
+  policies; the default runtime exposes only three compact tools
+- Uses a persistent store revision with capsule/delta/ack responses
 
 ## Installation
 
@@ -119,10 +123,10 @@ recommended automatic brief refresh protocol.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `STYLE_MEMORY_PATH` | `~/.style-memory-mcp/style-memory.json` | Path to the JSON store |
-| `STYLE_MEMORY_MIN_PROMOTE_COUNT` | `3` | Times a habit must be seen before becoming active |
+| `STYLE_MEMORY_MIN_PROMOTE_COUNT` | `2` | Compatibility habit observations required before activation; semantic expressions also require 2 independent sessions |
 | `STYLE_MEMORY_CANDIDATE_TTL_DAYS` | `30` | Days before unused candidate habits are deleted |
 | `STYLE_MEMORY_INACTIVE_TTL_DAYS` | `180` | Days before active habits are archived |
-| `STYLE_MEMORY_MAX_BRIEF_ITEMS` | `8` | Max habits returned in a style brief |
+| `STYLE_MEMORY_MAX_BRIEF_ITEMS` | `8` | Legacy brief limit; v2 expression/address limits are stricter |
 | `STYLE_MEMORY_MAX_EXAMPLE_LEN` | `60` | Max chars for a stored usage example |
 | `STYLE_MEMORY_LEARNING` | `on` | Set to `off` to disable learning |
 | `STYLE_MEMORY_DICTIONARY_PATH` | unset | Path to a custom style dictionary JSON file |
@@ -147,93 +151,38 @@ Custom dictionaries can be either an array or `{ "habits": [...] }`:
 
 ## Tools
 
-### `observe_user_message`
+The default chat connection exposes exactly three runtime tools:
 
-Learns lightweight style signals from the latest user message.
+- `bootstrap_style_memory`: starts a session and returns `channel`, `policy`,
+  `revision`, the first capsule, and one-time initialization state.
+- `observe_style_event`: submits only the latest user message plus compact
+  hints. It returns an acknowledgement, not the store.
+- `get_style_brief`: returns a capsule on first use, a short delta after a
+  revision change, or an ack when the known revision is current.
 
-Agents should call this after user messages, but should **not** send secrets, private memory dumps, or full chat logs.
+The runtime has two observation channels. A host `hook` observes each message
+outside the model tool loop. Without a hook, `agent` uses `full` during precise
+cold-start measurement, `event` after memory matures, or `off` for read-only
+reuse. `bootstrap_style_memory` reports the selected channel and policy.
 
-May optionally include a `hints` array — see [LLM-assisted
-learning](#llm-assisted-learning) below — and a `profileHints` array for
-concrete collaboration preferences.
+Set `STYLE_MEMORY_TOOLSET=admin` only for management and diagnostics. The
+admin-only surface includes the compatibility `observe_user_message`, full
+structured brief output, listing/review/pin/forget tools, address management,
+failure-log management, scoring, status, and `distill_recent_style`.
 
-### `get_style_brief`
+On a fresh empty store, bootstrap requests one-time initialization. A capable
+host may inspect at most 12 host-local sessions from the last 30 days, then call
+bootstrap again with only bounded voice, explicitly supported response
+preferences, concrete collaboration preferences, and up to 3 expression
+candidates. Raw messages, session titles, identity/address fields, failure
+rules, and unknown fields are rejected. If history is unavailable, the host
+submits `action: "skip"`; the choice persists.
 
-Returns a short text style brief for the agent to use lightly.
-
-Agents should call this at the start of a conversation, or before drafting a friendly reply.
-
-### `get_style_brief_structured`
-
-Returns JSON for agents that want both the text brief and structured metadata:
-
-- `brief`: text that can be placed directly into the agent context
-- `habits`: structured style habits
-- `interactionProfile`: structured collaboration preferences
-- `profileNudge`: a light reminder when stable style habits exist but no stable interaction profile exists yet; otherwise `null`
-
-### `distill_recent_style`
-
-Batched, user-endorsed seeding. The host LLM submits 3–8 high-conviction
-observations distilled from recent messages. Each habit becomes `active`
-immediately. Useful for warm-starting a fresh store, or when the user
-explicitly asks the agent to "really learn how I talk".
-
-### `distill_interaction_profile`
-
-Batched, user-endorsed seeding for concrete collaboration preferences such
-as "prefers value judgment before steps" or "likes plan → implement →
-verify for technical work". Do not submit personality labels,
-psychological states, diagnoses, or private facts.
-
-### `list_style_habits`
-
-Lists candidates, active habits, and archived habits.
-
-### `list_interaction_profile`
-
-Lists stored collaboration and response-structure preferences.
-
-### `review_style_habits`
-
-Returns a short review queue with suggested actions: `keep`, `pin`,
-`forget`, or `observe`. Useful when the user wants to inspect what the MCP
-has learned.
-
-### `review_interaction_profile`
-
-Returns a short review queue for collaboration preferences with suggested
-actions: `keep`, `pin`, `forget`, or `observe`.
-
-### `forget_style_habit`
-
-Deletes a habit by id or exact text.
-
-### `forget_interaction_preference`
-
-Deletes a collaboration preference by id or exact text.
-
-### `pin_style_habit`
-
-Pins a habit so cleanup will not delete it.
-
-### `pin_interaction_preference`
-
-Pins a collaboration preference so cleanup will not delete it.
-
-### `set_learning_enabled`
-
-Turns learning on or off.
-
-### `get_style_memory_score`
-
-Scores whether the local style memory is usable and stable. Returns
-readiness, stability, freshness, drift risk, over-imitation risk, whether
-`get_style_brief` should be refreshed, and short recommendations.
-
-### `get_style_memory_status`
-
-Shows the JSON path and habit counts.
+`distill_recent_style` accepts at most 3 qualitative candidates per call. Each
+candidate contributes one low-weight observation and remains subject to the
+2-observations/2-sessions activation gate; it never bulk-counts or immediately
+activates an expression pattern. This is separate from explicit profile
+distillation, which records reviewed collaboration preferences.
 
 ## Agent Instruction
 
@@ -241,16 +190,18 @@ Add something like this to your agent or skill:
 
 ```text
 Use style-memory-mcp for lightweight conversational style only.
-At the start of a conversation, call get_style_brief.
-After each user message, call observe_user_message with only the latest user message.
-In long chats, silently call get_style_brief again every 12-20 user turns,
-after major context switches, before long important answers, or whenever the
-user says things like "this feels off" or "realign to my style".
-If you spot a personal habit the built-in dictionary likely wouldn't catch
-(e.g. a self-invented sentence-final particle, an unusual structural quirk),
-add it as a hints[] entry on the same observe_user_message call.
-Three repetitions across two distinct contexts are needed before a habit
-becomes stable, so you don't need to be right on the first try.
+At the start of each new session, call bootstrap_style_memory and read its capsule before the first substantive reply.
+If bootstrap requests initialization, inspect at most 12 host-local sessions from the last 30 days and submit only sanitized aggregate fields; send action=skip if history is unavailable.
+Use observe_style_event only according to the returned hook/agent policy; send only the latest user message.
+Call get_style_brief with the known revision. Do not repeat the capsule when it returns an ack.
+After a revision change, use the returned delta and refresh the capsule before an important reply.
+As a long-chat fallback, refresh no earlier than 30 user turns, after context switches, or when the user says the style feels off.
+If you spot a personal habit the built-in dictionary likely would not catch,
+add a compact semantic hints[] entry to the same runtime event. Include
+behaviorSummary, functions, and one of exact_only, same_family, or
+open_variation when known. Two observations across two session IDs are
+needed before a semantic expression becomes active.
+Never infer a user name from assistant output, examples, environment text, or tools.
 Do not send secrets, private memories, files, or full conversation logs.
 Use returned style hints lightly. Shape the assistant's own stable
 collaboration style; never copy the user mechanically.
@@ -276,7 +227,8 @@ Do not store:
 - Psychological labels, diagnoses, or personality types.
 - Real-world identity, address, job, or other private facts.
 
-Host agents can submit `profileHints` on `observe_user_message`:
+Host agents can submit `profileHints` on `observe_style_event` (or the admin
+compatibility tool):
 
 ```jsonc
 {
@@ -305,11 +257,13 @@ Use `review_interaction_profile` for a short correction queue.
 
 ## Drift and Refresh
 
-The MCP server cannot push context into the host agent by itself. The host
-agent should refresh its alignment brief:
+The MCP server cannot push context into the host agent by itself. A persistent
+MCP configuration, one fixed absolute `STYLE_MEMORY_PATH`, and a global agent
+instruction must make the host bootstrap each new session. The host should
+refresh its alignment brief:
 
 - at the start of a new chat,
-- every 12–20 user turns in long chats,
+- no earlier than every 30 user turns as a long-chat fallback,
 - after major topic or context switches,
 - before long or important answers,
 - when the user says "this feels off", "realign to my style", "that does not sound like me", or similar.
@@ -350,7 +304,7 @@ let it pass along anything it noticed.** The MCP server stays a thin
 network. No model registry. Zero added cost.
 
 ```jsonc
-// observe_user_message input
+// observe_style_event input
 {
   "text": "tiny but mighty ✨ ship it",
   "context": "casual_chat",
@@ -365,13 +319,14 @@ network. No model registry. Zero added cost.
 }
 ```
 
-After three observations across two distinct `context` labels, `tiny but mighty` is
-promoted to `active` and shows up in future `get_style_brief` calls,
-example included. High-confidence hints (≥ ~0.71) skip the cross-context
-gate.
+After two semantic observations across two distinct `sessionId` values,
+`tiny but mighty` is promoted to `active` and can appear in future briefs.
+The MCP applies the score and activation gate; a host confidence hint does not
+replace the required observations.
 
-For batched, user-endorsed seeding, call `distill_recent_style` once with
-3–8 observations distilled from recent messages.
+For session-end distillation, call the admin-only `distill_recent_style` with
+at most 3 low-weight candidates. Each call is bounded and does not bypass the
+activation gate.
 
 Guardrails that make this safe:
 
@@ -380,7 +335,7 @@ Guardrails that make this safe:
 - Hints with a bad `kind` or empty `text` are dropped, not learned.
 - Examples are sanitized (`sanitizeExample`): whitespace collapse, length
   cap, sensitive content (credentials/tokens) silently dropped.
-- The three-strike + cross-context promote rule keeps a single hallucinated
+- The two-observation + two-session promote rule keeps a single hallucinated
   hint from polluting the active habit set.
 - All existing controls (`forget_style_habit`, `pin_style_habit`,
   `set_learning_enabled`) work unchanged.
@@ -393,8 +348,10 @@ Default behavior:
 
 - Candidate habits disappear after 30 inactive days.
 - Active habits are archived after 180 inactive days.
-- Archived habits are deleted after another 180 inactive days.
-- Pinned habits are never deleted automatically.
+- Archived habits are deleted after 360 days from their last appearance.
+- Pinned expression patterns are never deleted automatically.
+- Addresses, explicit companion preferences, and the failure log are not
+  forgotten by expression-pattern TTL cleanup. `forget` is immediate.
 
 Important: a habit is refreshed only when the user says it again. Agent usage does not keep it alive, so the system does not get stuck imitating itself.
 
@@ -415,7 +372,30 @@ Important: a habit is refreshed only when the user says it again. Agent usage do
 }
 ```
 
+## Upgrade and rollback
+
+For an existing installation, build the package and run
+`node scripts/install-or-upgrade.mjs` through a host-specific wrapper that
+supplies an explicit install root and the same absolute store path. The
+installer stages a versioned runtime, backs up the v1 store and host files,
+migrates the store atomically, switches a stable launcher, and performs a
+runtime/store-version handshake. A lock makes concurrent runs fail closed;
+faults return a machine-readable rollback result and restore the old runtime,
+store, and host configuration.
+
+The installer does not scan or modify arbitrary paths. Keep the launcher,
+MCP configuration, global agent instruction, and `STYLE_MEMORY_PATH` stable
+across sessions so each new session can bootstrap the same store.
+
 ## Development
+
+The `v0.5.0` hardening backlog, memory model, reproducible experiments, and release gate
+are tracked in
+[`docs/V0.5.0-HARDENING-PLAN.zh-CN.md`](docs/V0.5.0-HARDENING-PLAN.zh-CN.md).
+The milestone is complete only after every required experiment passes.
+The detailed execution sequence and handoff prompt are in
+[`docs/V0.5.0-EXECUTION-PLAN.zh-CN.md`](docs/V0.5.0-EXECUTION-PLAN.zh-CN.md)
+and [`docs/V0.5.0-IMPLEMENTATION-PROMPT.zh-CN.md`](docs/V0.5.0-IMPLEMENTATION-PROMPT.zh-CN.md).
 
 ```bash
 # Install dependencies
@@ -441,14 +421,20 @@ lives in `src/extract.ts` and is **never** sent to the LLM. It only
 participates in local `text.includes()` / regex scans. Doubling the
 dictionary costs zero extra tokens per turn.
 
-The only payloads that reach the host LLM are:
+The payloads that reach the host LLM include:
 
-1. `get_style_brief` output — bounded by `STYLE_MEMORY_MAX_BRIEF_ITEMS`
-   (default 8). The brief surfaces only **habits the user has actually
-   exhibited and which were promoted to active**, not whatever sits in
-   the dictionary.
-2. Tool descriptions — fixed in `server.ts`, independent of dictionary
-   size.
+1. The first capsule and later deltas. The v2 brief has six ordered sections:
+   address, core voice, expression patterns, punctuation/emoji, companion
+   preferences, and failure log. Typical output selects one address per
+   direction and two expression patterns; hard limits are two addresses per
+   direction and five expression patterns.
+2. Tool descriptions, schemas, call parameters, and tool returns. Runtime
+   exposes only three compact schemas; admin schemas are opt-in.
+
+The capsule remains in later model inputs and must be counted again by a real
+token usage report. A revision ack does not append another copy. The project
+does not claim an E06 model-token result when no target tokenizer or model API
+usage is available; see `docs/V0.5.0-TOKEN-REPORT.zh-CN.md`.
 
 So if your dialect or slang isn't covered, please send a PR with new
 entries — it only improves recall and won't bloat anyone's prompts.

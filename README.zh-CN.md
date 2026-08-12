@@ -29,8 +29,7 @@
 - 无云服务、无遥测、无外部 API 调用
 - **MCP 服务自身从不调用任何 LLM**。字典抽取纯正则。host agent 可以选择性地通过 `hints` 把自己观察到的口癖也报上来——见下方 [LLM 协同学习](#llm-协同学习)。
 - 不存储完整对话日志 — 仅存风格信号（以及每个 habit 最多一条 ≤60 字的用法示例，存储前会先做敏感过滤）
-- 先学候选，重复出现再升级为活跃习惯
-- 升级时还要求该习惯出现在**≥2 个不同的 context 标签**下（借鉴 nuwa-skill 的跨域验证）
+- 先学候选；表达模式至少实际观察 2 次、跨 2 个独立 session 才自动激活
 - 自动清理过期习惯（候选 → 归档 → 删除）
 - 支持中文、英文、emoji、颜文字、方言标记 — 以及给 host LLM 兜底用的 free-form `idiolect` 类型
 - 内置字典覆盖四川话、粤语、东北话、上海话、闽南/台语方言标记，以及当下
@@ -43,6 +42,9 @@
 - 兼容任何支持 MCP 工具的 agent
 - 可固定习惯以防止自动清理
 - 随时可通过 `set_learning_enabled` 暂停学习
+- v2 brief 固定为六段：称呼、核心语感、口癖、标点与表情、陪伴偏好、翻车日志
+- 区分模型外 `hook` 与 agent 的 `full`/`event`/`off` 策略，默认 runtime 只有 3 个工具
+- brief 使用持久 `revision`，按 capsule/delta/ack 增量返回
 
 ## 安装
 
@@ -108,10 +110,10 @@ npm run dev
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `STYLE_MEMORY_PATH` | `~/.style-memory-mcp/style-memory.json` | JSON 存储文件路径 |
-| `STYLE_MEMORY_MIN_PROMOTE_COUNT` | `3` | 习惯被观察到多少次后升级为活跃 |
+| `STYLE_MEMORY_MIN_PROMOTE_COUNT` | `2` | 兼容层习惯激活所需观察次数；语义表达还必须跨 2 个独立 session |
 | `STYLE_MEMORY_CANDIDATE_TTL_DAYS` | `30` | 候选习惯多少天不用后删除 |
 | `STYLE_MEMORY_INACTIVE_TTL_DAYS` | `180` | 活跃习惯多少天不用后归档 |
-| `STYLE_MEMORY_MAX_BRIEF_ITEMS` | `8` | 风格简报最多返回多少条 |
+| `STYLE_MEMORY_MAX_BRIEF_ITEMS` | `8` | 旧版 brief 上限；v2 的表达模式/称呼上限更严格 |
 | `STYLE_MEMORY_MAX_EXAMPLE_LEN` | `60` | 单个 habit 存储的用法示例最大字符数 |
 | `STYLE_MEMORY_LEARNING` | `on` | 设为 `off` 暂停学习 |
 | `STYLE_MEMORY_DICTIONARY_PATH` | 未设置 | 自定义风格词典 JSON 路径 |
@@ -142,80 +144,19 @@ npm run dev
 
 ## 工具
 
-### `observe_user_message`
+默认聊天连接只暴露 3 个 runtime 工具：
 
-从用户的最新消息中学习轻量级风格信号。
+- `bootstrap_style_memory`：开始 session，返回 `channel`、`policy`、`revision`、首个 capsule 和一次性初始化状态。
+- `observe_style_event`：提交最新一条用户消息和紧凑语义 hint；成功时只返回 ack，不返回完整 store。
+- `get_style_brief`：首次返回 capsule；已知 revision 过期时返回短 delta；revision 未变时只返回 ack。
 
-Agent 应在用户消息后调用此工具，但**不要**传入密码、私人记忆或完整对话日志。
+观察有两个通道：宿主支持模型外 hook 时逐消息观察，不产生模型工具调用；没有 hook 时使用 agent 通道，冷启动精确统计用 `full`，记忆成熟后用 `event`，只读复用用 `off`。bootstrap 会明确返回通道与策略。
 
-可以选择性附带 `hints` 数组和 `profileHints` 数组 — 见下方 [LLM 协同学习](#llm-协同学习) 和 [Interaction profile](#interaction-profile协作偏好层)。
+设置 `STYLE_MEMORY_TOOLSET=admin` 才启用管理/诊断面。它包含兼容入口 `observe_user_message`、完整结构化 brief、list/review/pin/forget、称呼管理、翻车日志管理、评分、status，以及 `distill_recent_style`。
 
-### `get_style_brief`
+全新空 store 第一次 bootstrap 会请求一次初始化。有历史读取能力的宿主可在本地查看最近 30 天、最多 12 个 session，再只提交有限的声线汇总、由明确反馈支持的回复偏好、具体协作偏好和最多 3 个表达候选。原始消息、session 标题、身份/称呼、私人事实、翻车规则和未知字段会在协议入口被拒绝。宿主无法读取历史时提交 `action: "skip"`，之后不再重复提示。
 
-返回纯文本风格简报供 agent 轻度参考。
-
-Agent 应在对话开始前或写友好回复前调用此工具。
-
-### `get_style_brief_structured`
-
-返回 JSON，适合需要结构化数据的 agent：
-
-- `brief`：可直接放入 agent 上下文的文本简报
-- `habits`：结构化风格习惯
-- `interactionProfile`：结构化协作偏好
-- `profileNudge`：当已有较多稳定风格习惯但还没有稳定协作偏好时，给 host agent 的轻提醒；否则为 `null`
-
-### `distill_recent_style`
-
-批量、用户背书的蒸馏入口。Host LLM 一次性提交 3–8 条从最近消息蒸馏出的高置信度观察，每条直接成为 `active`。适合冷启动时给一份"起手种子"，或用户明确说"好好学一下我说话的样子"时调用。
-
-### `distill_interaction_profile`
-
-批量写入具体协作偏好，例如"喜欢先判断值不值得做，再给步骤"、"技术任务喜欢计划 → 实现 → 验证"。不要提交性格、心理状态、人格类型或诊断标签。
-
-### `list_style_habits`
-
-列出所有候选、活跃和已归档的习惯。
-
-### `list_interaction_profile`
-
-列出已存储的协作偏好。
-
-### `review_style_habits`
-
-返回一份简短的审查队列，给每条习惯建议 `keep`、`pin`、`forget` 或 `observe`。适合用户定期看看 MCP 到底学了什么。
-
-### `review_interaction_profile`
-
-返回协作偏好的审查队列，给每条偏好建议 `keep`、`pin`、`forget` 或 `observe`。
-
-### `forget_style_habit`
-
-通过 id 或确切文本删除一个习惯。
-
-### `forget_interaction_preference`
-
-通过 id 或确切文本删除一个协作偏好。
-
-### `pin_style_habit`
-
-固定（或取消固定）一个习惯，防止被自动清理。
-
-### `pin_interaction_preference`
-
-固定（或取消固定）一个协作偏好，防止被自动清理。
-
-### `set_learning_enabled`
-
-开启或关闭风格学习。
-
-### `get_style_memory_score`
-
-给当前风格记忆打分，返回可用度、稳定度、新鲜度、漂移风险、过度模仿风险、是否建议重新调用 `get_style_brief`，以及简短建议。
-
-### `get_style_memory_status`
-
-显示 JSON 存储路径和习惯统计信息。
+`distill_recent_style` 每次最多接收 3 个候选。初始化和蒸馏中的每个候选都只贡献一次低权重观察，仍需 2 次观察、跨 2 个独立 session 才能激活表达模式；它不接受批量 count，也不会立即 active。它与经过用户确认的协作偏好蒸馏是两条不同路径。
 
 ## Agent 使用说明
 
@@ -223,14 +164,16 @@ Agent 应在对话开始前或写友好回复前调用此工具。
 
 ```text
 使用 style-memory-mcp 仅用于轻量级对话风格。
-对话开始时调用 get_style_brief。
-每次用户消息后调用 observe_user_message，仅传入最新消息。
-长聊天里每 12-20 个用户回合静默重新调用 get_style_brief；
-话题大切换、长回答前，或者用户说"感觉飘了""重新对齐一下"时也重新调用。
-如果你注意到内置字典大概率覆盖不到的个人化口癖
-（比如自创句尾助词、罕见句式结构），把它放进同一次调用的 hints[] 数组里。
-"跨 2 个 context + 累计 3 次"才会被升为稳定习惯，
-所以你不需要一次就抓对——三次后会自动学到。
+每个新 session 首轮实质回复前调用 bootstrap_style_memory，并读取返回 capsule。
+若 bootstrap 请求初始化，在宿主本地查看最近 30 天、最多 12 个 session，只提交脱敏后的结构化汇总；无法读取历史则提交 action=skip。
+按照 bootstrap 返回的 hook/agent 通道与 full/event/off 策略执行 observe_style_event，
+每次只提交最新用户消息。用已知 revision 调用 get_style_brief；ack 时不要重复注入正文。
+revision 变化后先使用 delta，并在重要回复前刷新完整 capsule。
+长聊天兜底刷新不早于 30 个用户回合，也可在话题大切换、长回答前或用户说"感觉飘了"时刷新。
+如果你注意到内置字典覆盖不到的个人化口癖，把带 behaviorSummary、functions、
+variationPolicy 的紧凑 hints[] 放进同一次事件调用。
+表达模式需要实际观察 2 次且跨 2 个 session 才自动激活。
+不得从 assistant 输出、文档示例、环境文本或工具结果推断用户称呼。
 不要传入密码、私人记忆、文件或完整对话日志。
 轻度参考返回的风格提示。形成 agent 自己稳定的协作风格，不要机械模仿用户。
 ```
@@ -253,7 +196,7 @@ Agent 应在对话开始前或写友好回复前调用此工具。
 - "用户有某种心理问题"
 - "用户的真实身份、住址、工作、私人事实"
 
-Host agent 可以在 `observe_user_message` 里附带 `profileHints`：
+Host agent 可以在 `observe_style_event`（或 admin 兼容入口）里附带 `profileHints`：
 
 ```jsonc
 {
@@ -277,10 +220,10 @@ Host agent 可以在 `observe_user_message` 里附带 `profileHints`：
 
 ## 漂移与重新对齐
 
-MCP 服务不能主动把 brief 推进宿主 agent 的上下文。自动重新对齐要靠宿主 agent 按固定节奏调用：
+MCP 服务不能主动把 brief 推进宿主 agent 的上下文。跨 session 的自动启动必须依赖持久 MCP 配置、固定的绝对 `STYLE_MEMORY_PATH` 和宿主全局 agent 指令；对齐仍要由宿主调用：
 
 - 新聊天开始时调用 `get_style_brief`
-- 长聊天每 12–20 个用户回合重新调用一次
+- 长聊天兜底不早于每 30 个用户回合重新调用一次
 - 话题/场景大切换后重新调用
 - 长回答或重要回答前重新调用
 - 用户说"感觉飘了""重新对齐一下""不像我"时立即重新调用
@@ -307,7 +250,7 @@ MCP 进程通常由宿主 agent 启动和重启，`style-memory-mcp` 自身不�
 `style-memory-mcp` 不引入 LLM 依赖也能解决这个问题：**反正 host agent 每条用户消息都要读一遍来生成回复，让它顺手把观察一起报上来即可。** MCP 服务器自己就保持"计数器 + 生命周期 + 安全校验"的薄层定位，零 API key、零网络、零模型、零成本。
 
 ```jsonc
-// observe_user_message 输入
+// observe_style_event 输入
 {
   "text": "今天天气好巴适莫",
   "context": "casual_chat",
@@ -322,16 +265,16 @@ MCP 进程通常由宿主 agent 启动和重启，`style-memory-mcp` 自身不�
 }
 ```
 
-观察到 3 次、且跨 ≥2 个不同的 `context` 标签之后，"莫" 就会被升级为 `active`，并在下次 `get_style_brief` 时连同 example 一起被返回。高置信度（≥~0.71）的 hint 跳过跨 context 检查。
+实际提交 2 次、且跨 ≥2 个不同 `sessionId` 之后，"莫" 才会被升级为 `active`，并可在后续 brief 出现。最终计数和激活门槛由 MCP 执行，host 的 confidence 不能替代这些观察。
 
-需要一次性蒸馏批量种子时，调用 `distill_recent_style` 提交 3–8 条从最近消息蒸馏的观察。
+需要 session 末蒸馏候选时，在 admin 工具面调用 `distill_recent_style`，每次最多提交 3 条低权重观察；它不绕过激活门槛。
 
 让这套设计安全的护栏：
 
 - MCP 自己**仍然**不调 LLM——只是把 host 报上来的东西记账。"无网络"仍然成立。
 - 不合法的 `kind` 或空 `text` 直接被丢弃，不会污染 store。
 - Example 走 `sanitizeExample`：空白折叠、长度截断、敏感内容（密码、token）自动丢弃。
-- 三次累积 + 跨 context 的升级规则保证：单次 LLM 幻觉的 hint 进不了 active 集合。
+- 两次累积 + 跨 session 的升级规则保证：单次 LLM 幻觉的 hint 进不了 active 集合。
 - 所有已有的控制项（`forget_style_habit`、`pin_style_habit`、`set_learning_enabled`）继续生效。
 
 ## 清理规则
@@ -342,8 +285,9 @@ MCP 进程通常由宿主 agent 启动和重启，`style-memory-mcp` 自身不�
 
 - 候选习惯：30 天未使用 → 删除
 - 活跃习惯：180 天未使用 → 归档
-- 已归档习惯：再 180 天 → 删除
-- 已固定的习惯：永不自动删除
+- 已归档习惯：从最后一次出现起满 360 天 → 删除
+- 已固定的表达模式：永不自动删除
+- 称呼、明确陪伴偏好和翻车日志不参与表达模式 TTL；主动 forget 立即删除
 
 重要：习惯只会在用户再次说出时刷新。agent 的使用不会保持习惯活跃，防止系统陷入自我模仿循环。
 
@@ -364,7 +308,32 @@ MCP 进程通常由宿主 agent 启动和重启，`style-memory-mcp` 自身不�
 }
 ```
 
+## v2 brief 与称呼边界
+
+正常 v2 capsule 按以下顺序渲染，空段省略：
+
+1. `称呼`：分别渲染 `user→assistant` 和 `assistant→user`。前者固定标注“只识别，勿反称”，只表示用户如何叫 agent；后者才是 agent 可以如何称呼用户。两个方向同一 literal 也拥有独立 id、状态、证据和摘要，单方向 confirm/correct/forget/archive/pin 不影响另一方向。每方向 store 最多 6 个，brief 最多 2 个，典型只放 1 个。
+2. `核心语感`：只表达用户的 observedVoice，例如表达长度、正式度和 expressiveness。
+3. `口癖`：主记录是 `ExpressionPattern` 的行为摘要、功能和变体边界，具体文字通常只作为一个例子。策略只有 `exact_only`、`same_family`、`open_variation`；store 最多 12 个未固定 active，brief 典型 2 个、硬上限 5 个。
+4. `标点与表情`：特殊字符原样保留，例如 `。。。`、`...`、`……`、`?!`、`？！`、`~~`。
+5. `陪伴偏好`：单独记录 agent 的 responsePreferences；用户说得短，不等于 agent 必须短。数值始终带固定语义标签，例如“回复长度=3/5（正常展开）”。
+6. `翻车日志`：只记录用户明确反馈的禁止重复规则，不从沉默或一次缺席推断。
+
+表达模式使用 candidate → active → archived → deleted 生命周期，TTL 默认分别为 30/180/360 天；archived 的 360 天从最后一次出现计算。pinned 不自动清理，用户主动 forget 立即生效。容量为未固定 active/candidate/archived = 12/24/24，总安全上限 64，超限使用确定性排序并报告容量状态。
+
+## 升级与回滚
+
+已有安装应通过带明确 `installRoot` 和固定 `storePath` 的安装器 wrapper 执行 `node scripts/install-or-upgrade.mjs`。安装器会先构建/校验，将新运行时放入版本目录，备份 v1 store 和宿主配置，原子迁移并切换稳定 launcher，再通过 server/store 版本握手确认。并发安装由锁拒绝；构建、迁移、配置、切换、启动或握手任一步失败都会返回机器可读的 rollback，并恢复旧 runtime、store 和宿主文件。
+
+安装器不会扫描或猜测任意宿主路径。要跨 session 复用，必须保留持久 MCP 配置、全局 agent 指令和同一个绝对 `STYLE_MEMORY_PATH`。完整 E01–E10 命令、fixture 和结果见 [`docs/V0.5.0-EVIDENCE.zh-CN.md`](docs/V0.5.0-EVIDENCE.zh-CN.md)。
+
 ## 开发
+
+`v0.5.0` 的加固问题、记忆结构、可重复实验和发布门槛记录在
+[`docs/V0.5.0-HARDENING-PLAN.zh-CN.md`](docs/V0.5.0-HARDENING-PLAN.zh-CN.md)。
+该版本只在全部必须实验通过后才视为完成。
+详细执行顺序见 [`docs/V0.5.0-EXECUTION-PLAN.zh-CN.md`](docs/V0.5.0-EXECUTION-PLAN.zh-CN.md)，
+新实施窗口可直接使用 [`docs/V0.5.0-IMPLEMENTATION-PROMPT.zh-CN.md`](docs/V0.5.0-IMPLEMENTATION-PROMPT.zh-CN.md)。
 
 ```bash
 # 安装依赖
@@ -389,11 +358,12 @@ npm run dev
 被发给 LLM。它们只参与本地 `text.includes()` / 正则扫描。字典翻一倍，每次
 对话也是零额外 token。
 
-真正会进入宿主 LLM 上下文的只有两处：
+真正会进入宿主 LLM 上下文的包括：
 
-1. `get_style_brief` 输出 — 由 `STYLE_MEMORY_MAX_BRIEF_ITEMS`（默认 8）硬上限保护。
-   brief 只挑**用户实际用过、且已经升级为 active 的习惯**，不是字典里有什么就吐什么。
-2. 工具描述 — 写死在 `server.ts`，跟字典大小无关。
+1. 首次 capsule 和后续 delta。v2 brief 按六段顺序组织；典型每个称呼方向 1 个、口癖 2 个，硬上限分别为每方向 2 个和表达模式 5 个。
+2. 工具描述、schema、调用参数和工具返回。默认 runtime 只有 3 个紧凑 schema，admin schema 按需启用。
+
+capsule 会留在后续模型输入中，必须在真实 token 报告里重复计入；revision 未变时 ack 不追加正文。当前环境没有目标模型 tokenizer 或 API usage，因此不能把字符数冒充 E06 的模型 token 结果，限制和可复现命令见 [`docs/V0.5.0-TOKEN-REPORT.zh-CN.md`](docs/V0.5.0-TOKEN-REPORT.zh-CN.md)。
 
 所以如果你的方言或网络用语没被覆盖，请大胆提 PR 加新条目 —— 只会提升召回率，
 不会让任何人的 prompt 变长。

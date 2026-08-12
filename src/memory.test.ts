@@ -50,6 +50,7 @@ beforeEach(async () => {
   const store = await loadStore();
   store.habits = [];
   store.profile.preferences = [];
+  store.profile.expressionPatterns = [];
   store.settings.allowLearning = true;
   await saveStore(store);
 });
@@ -148,13 +149,14 @@ describe("getStyleBrief", () => {
 
     const brief = await getStyleBrief();
     assert.ok(brief.includes("哈哈哈"));
-    assert.ok(brief.includes("How to apply:"));
-    assert.ok(brief.includes("Relevant habits:"));
+    assert.ok(brief.includes("风格记忆 v2"));
+    assert.ok(brief.includes("口癖[重点"));
   });
 
   it("returns fallback message when no active habits", async () => {
     const brief = await getStyleBrief();
-    assert.ok(brief.includes("No stable style habits yet"));
+    assert.ok(brief.includes("风格记忆 v2"));
+    assert.ok(!brief.includes("口癖[重点"));
   });
 
   it("filters out habits with avoidWhen matching context", async () => {
@@ -179,7 +181,7 @@ describe("getStyleBrief", () => {
 
     const brief = await getStyleBrief("formal_writing");
     assert.ok(!brief.includes("lol"));
-    assert.ok(brief.includes("No stable style habits"));
+    assert.ok(brief.includes("风格记忆 v2"));
   });
 
   it("filters playful habits in high-stakes contexts", async () => {
@@ -275,7 +277,7 @@ describe("getStyleBrief", () => {
     await saveStore(store);
 
     const brief = await getStyleBrief("technical_chat");
-    assert.ok(brief.includes("Interaction profile:"));
+    assert.ok(brief.includes("陪伴偏好"));
     assert.ok(brief.includes("prefers direct assessment before implementation"));
   });
 
@@ -299,7 +301,7 @@ describe("getStyleBrief", () => {
     await saveStore(store);
 
     const result = await getStyleBriefStructured("casual_chat");
-    assert.ok(result.brief.includes("Style brief:"));
+    assert.ok(result.brief.includes("风格记忆 v2"));
     assert.equal(result.habits.length, 8);
     assert.equal(result.interactionProfile.length, 0);
     assert.ok(result.profileNudge?.includes("distill_interaction_profile"));
@@ -328,7 +330,7 @@ describe("getStyleBrief", () => {
     assert.equal(result.profileNudge, null);
   });
 
-  it("keeps the legacy text-only brief API", async () => {
+  it("keeps the text-only brief API while using the v2 capsule", async () => {
     const now = new Date().toISOString();
     const store = await loadStore();
     store.habits = [
@@ -350,7 +352,7 @@ describe("getStyleBrief", () => {
 
     const brief = await getStyleBrief("casual_chat");
     assert.ok(brief.includes("legacy-brief-marker"));
-    assert.ok(!brief.trim().startsWith("{"));
+    assert.ok(brief.includes("风格记忆 v2"));
   });
 
   it("does not return a profile nudge when an active profile preference exists", async () => {
@@ -590,7 +592,7 @@ describe("pinStyleHabit", () => {
 // ---- Cleanup lifecycle tests ----
 
 describe("cleanup lifecycle (via observeUserMessage)", () => {
-  it("archived habits are eventually deleted", async () => {
+  it("does not apply expression TTL deletion to legacy habits", async () => {
     const now = new Date();
     const oldDate = new Date(now.getTime() - 400 * 86_400_000); // 400 days ago
 
@@ -617,10 +619,11 @@ describe("cleanup lifecycle (via observeUserMessage)", () => {
     const result = await observeUserMessage("hello");
     assert.ok(result.cleanup.deleted >= 1 || result.cleanup.archived >= 0);
 
-    // Old archived habit should be gone
+    // The primary expression may be deleted, but the legacy projection is not
+    // subject to expression TTL.
     const habits = await listStyleHabits();
     const ancient = habits.find((h) => h.id === "old-archived");
-    assert.equal(ancient, undefined);
+    assert.equal(ancient?.status, "archived");
   });
 
   it("pinned habits survive cleanup", async () => {
@@ -922,7 +925,7 @@ describe("getStyleBrief renders examples", () => {
 });
 
 describe("distillRecentStyle", () => {
-  it("writes batched observations and promotes to active immediately", async () => {
+  it("records bounded low-weight candidates without immediate activation", async () => {
     process.env.STYLE_MEMORY_MIN_PROMOTE_COUNT = "3";
     const result = await distillRecentStyle([
       {
@@ -939,8 +942,9 @@ describe("distillRecentStyle", () => {
     ]);
     assert.equal(result.learned.length, 2);
     for (const h of result.learned) {
-      assert.equal(h.status, "active", "distilled habits should be active on first write");
-      assert.equal(h.source, "distill");
+      assert.equal(h.status, "candidate");
+      assert.equal(h.seenCount, 1);
+      assert.equal(h.source, "hint");
     }
     delete process.env.STYLE_MEMORY_MIN_PROMOTE_COUNT;
   });
